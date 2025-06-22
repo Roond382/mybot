@@ -1,4 +1,5 @@
-import os
+import sys
+sys.modules['imghdr'] = __import__('imghdr_patched')
 import sys
 import logging
 from datetime import datetime, timedelta
