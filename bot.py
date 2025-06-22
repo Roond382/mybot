@@ -1213,7 +1213,9 @@ def main() -> None:
     init_db()
     check_environment()
 
-    application = Application.builder().token(TOKEN).post_init(post_init).build()
+    builder = Application.builder().token(TOKEN)
+    builder.post_init(post_init)
+    application = builder.build()
     setup_handlers(application)
 
     # Планировщик для проверки заявок каждые 5 минут
