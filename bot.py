@@ -1,6 +1,7 @@
 import sys
 import os
 import logging
+import weakref
 from datetime import datetime, timedelta
 import socket
 import atexit
