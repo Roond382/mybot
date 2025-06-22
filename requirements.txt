@@ -1,7 +1,5 @@
-cat > requirements.txt <<EOF
 python-telegram-bot==13.7
 apscheduler==3.6.3
 python-dotenv==1.0.0
 pytz==2023.3
 aiofiles==23.2.1
-EOF
