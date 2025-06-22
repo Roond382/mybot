@@ -1216,6 +1216,9 @@ def main() -> None:
     builder = Application.builder().token(TOKEN)
     builder.post_init(post_init)
     application = builder.build()
+
+    # Временный фикс для weakref
+    application.job_queue._application = application
     setup_handlers(application)
 
     # Планировщик для проверки заявок каждые 5 минут
