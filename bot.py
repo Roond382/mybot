@@ -1,7 +1,6 @@
-import sys
 import os
+import sys
 import logging
-import weakref
 from datetime import datetime, timedelta
 import socket
 import atexit
@@ -1213,12 +1212,7 @@ def main() -> None:
     init_db()
     check_environment()
 
-    builder = Application.builder().token(TOKEN)
-    builder.post_init(post_init)
-    application = builder.build()
-
-    # Временный фикс для weakref
-    application.job_queue._application = application
+    application = Application.builder().token(TOKEN).post_init(post_init).build()
     setup_handlers(application)
 
     # Планировщик для проверки заявок каждые 5 минут
