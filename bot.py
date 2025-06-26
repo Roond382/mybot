@@ -617,9 +617,8 @@ async def handle_type_selection(update: Update, context: CallbackContext) -> int
             reply_markup=InlineKeyboardMarkup(keyboard_nav))
         return ANNOUNCE_TEXT_INPUT
     else:
-        await safe_edit_message_text(query, "Неизвестный тип заявки. Пожалуйста, выберите из предложенных.",
-                                     reply_markup=InlineKeyboardMarkup(keyboard_nav))
-        return TYPE_SELECTION # Возвращаемся к выбору типа
+        await safe_edit_message_text(query, "❌ Неизвестный тип заявки. Возвращаемся в начало.")
+        return await start_command(update, context)
 
 async def handle_sender_name_input(update: Update, context: CallbackContext) -> int:
     """Обрабатывает ввод имени отправителя для поздравления."""
@@ -865,8 +864,6 @@ async def handle_confirmation(update: Update, context: CallbackContext) -> int:
         context.user_data.clear()
         return await start_command(update, context)
 
-    return WAIT_CENSOR_APPROVAL # Остаемся в этом состоянии, если не обработали
-
 async def moderate_command(update: Update, context: CallbackContext) -> None:
     """Обработчик команды /moderate для администратора."""
     if update.effective_chat.id != ADMIN_CHAT_ID:
@@ -1042,13 +1039,7 @@ async def main():
             ],
         },
         fallbacks=[
-            CallbackQueryHandler(handle_confirmation, pattern='^back_to_start$'), # Обработка кнопки 
-
-
-            CallbackQueryHandler(handle_confirmation, pattern=\'^back_to_start$\'), # Обработка кнопки \
-
-
-            CallbackQueryHandler(handle_confirmation, pattern='^back_to_start$'), # Обработка кнопки "Вернуться в начало"
+            CallbackQueryHandler(back_to_start, pattern='^back_to_start$'),
             CommandHandler("cancel", cancel_command) # Обработка команды /cancel
         ]
     )
