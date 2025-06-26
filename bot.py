@@ -512,18 +512,20 @@ async def check_pending_applications(context: CallbackContext) -> None:
             await asyncio.sleep(1)
 
 async def check_shutdown_time(context: CallbackContext) -> None:
-    """Проверяет, не вышло ли время работы бота (23:00) и корректно останавливает его"""
+    """Проверяет, не вышло ли время работы бота и корректно останавливает его"""
     if not is_working_hours():
         logger.info("Рабочее время закончилось. Останавливаем бота.")
         await send_bot_status(context.bot, "Остановка (рабочее время закончилось)")
         
+        if not hasattr(context, 'application') or not context.application:
+            logger.error("Не удалось остановить бота: отсутствует context.application")
+            return
+            
         try:
-            # Корректное завершение приложения python-telegram-bot
             await context.application.shutdown()
-            # sys.exit(0) или os._exit(0) не нужны, т.к. shutdown() позаботится о завершении
+            await context.application.stop()
         except Exception as e:
             logger.error(f"Ошибка при остановке бота: {e}")
-            # Если shutdown() не сработал, можно принудительно выйти, но это крайний случай
             sys.exit(1)
 
 def check_environment():
@@ -882,6 +884,19 @@ async def back_to_start(update: Update, context: CallbackContext) -> int:
     result = await start_command(update, context)
     logger.info(f"back_to_start завершен, переход в состояние: {result}")
     return result
+	
+async def cancel_command(update: Update, context: CallbackContext) -> int:
+    """Отменяет текущую операцию и очищает состояние."""
+    user = update.effective_user
+    logger.info(f"Пользователь @{user.username if user else 'N/A'} отменил операцию.")
+    context.user_data.clear()
+    
+    await safe_reply_text(
+        update,
+        "❌ Операция отменена. Все введенные данные удалены.",
+        reply_markup=None
+    )
+    return ConversationHandler.END
 
 async def moderate_command(update: Update, context: CallbackContext) -> None:
     """Обработчик команды /moderate для администратора."""
@@ -892,16 +907,7 @@ async def moderate_command(update: Update, context: CallbackContext) -> None:
     args = context.args
     if not args or len(args) != 1:
         await safe_reply_text(update, "Использование: /moderate <app_id>")
-
-    except ValueError:
-        await safe_reply_text(update, "ID заявки должен быть числом.")
         return
-
-    app_details = get_application_details(app_id)
-
-    if not app_details:
-        await safe_reply_text(update, f"Заявка с ID {app_id} не найдена.")
-
 
     try:
         app_id = int(args[0])
@@ -910,7 +916,6 @@ async def moderate_command(update: Update, context: CallbackContext) -> None:
         return
 
     app_details = get_application_details(app_id)
-
     if not app_details:
         await safe_reply_text(update, f"Заявка с ID {app_id} не найдена.")
         return
@@ -985,21 +990,28 @@ async def handle_moderation_callback(update: Update, context: CallbackContext) -
             await safe_edit_message_text(query, f"Ошибка при отклонении заявки #{app_id}.")
 
 async def error_handler(update: object, context: CallbackContext) -> None:
-    """Логирует ошибки, вызванные обработчиками Update."""
-    logger.error("Исключение при обработке обновления:", exc_info=context.error)
-    try:
-        if ADMIN_CHAT_ID:
-            error_message = (
-                f"❌ Произошла ошибка в боте!\n"
-                f"Update: {update}\n"
-                f"Ошибка: {context.error}\n"
-                f"Traceback: {traceback.format_exc()}"
+    """Логирует ошибки и уведомляет администратора."""
+    error_msg = f"Ошибка: {context.error}\nТип: {type(context.error)}"
+    logger.error(error_msg, exc_info=True)
+    
+    if ADMIN_CHAT_ID:
+        try:
+            # Формируем информацию об обновлении
+            update_info = ""
+            if isinstance(update, Update):
+                if update.message:
+                    update_info = f"Чат: {update.message.chat.id}\nТекст: {update.message.text[:100]}"
+                elif update.callback_query:
+                    update_info = f"Callback: {update.callback_query.data}"
+            
+            # Отправляем сокращенное сообщение
+            await context.bot.send_message(
+                chat_id=ADMIN_CHAT_ID,
+                text=f"⚠️ Ошибка в боте:\n{error_msg}\n{update_info}",
+                disable_notification=True
             )
-            # Отправляем сообщение об ошибке администратору, обрезая длинный traceback
-            await safe_send_message(context.bot, ADMIN_CHAT_ID, error_message[:4000])
-    except Exception as e:
-        logger.error(f"Ошибка при отправке сообщения об ошибке администратору: {e}")
-
+        except Exception as e:
+            logger.error(f"Ошибка отправки уведомления: {e}")
 # --- Функции для отслеживания состояния бота ---
 def get_uptime() -> str:
     """Возвращает время работы бота."""
@@ -1029,12 +1041,14 @@ async def main():
 
     check_bot_health()
     init_db()
-    await load_bad_words_cached() # Загружаем и кэшируем слова при старте
+    await load_bad_words_cached()  # Загружаем и кэшируем слова при старте
 
     # Инициализация Application
     application = Application.builder().token(TOKEN).build()
 
     # Добавляем обработчики
+    application.add_handler(CommandHandler("cancel", cancel_command))
+    
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start_command)],
         states={
@@ -1068,9 +1082,11 @@ async def main():
         },
         fallbacks=[
             CallbackQueryHandler(back_to_start, pattern='^back_to_start$'),
-            CommandHandler("cancel", cancel_command) # Обработка команды /cancel
-        ]
+            CommandHandler("cancel", cancel_command)
+        ],
+        per_message=False
     )
+    
     application.add_handler(conv_handler)
     application.add_handler(CommandHandler("moderate", moderate_command))
 
@@ -1080,10 +1096,20 @@ async def main():
     # Запуск планировщика APScheduler
     global scheduler
     scheduler = AsyncIOScheduler(timezone=TIMEZONE)
-    scheduler.add_job(check_pending_applications, 'interval', minutes=1, args=(application.bot,))
-    scheduler.add_job(check_shutdown_time, 'interval', minutes=1, args=(application.bot,))
-    scheduler.add_job(send_periodic_status, 'interval', hours=1, args=(application.bot,))
+    scheduler.add_job(check_pending_applications, 'interval', minutes=1, args=(application,))
+    scheduler.add_job(check_shutdown_time, 'interval', minutes=1, args=(application,))
+    scheduler.add_job(send_periodic_status, 'interval', hours=1, args=(application,))
     scheduler.start()
+
+    # Проверка доступности бота
+    try:
+        await application.bot.get_me()
+        logger.info(f"Бот @{application.bot.username} доступен")
+    except Exception as e:
+        logger.critical(f"Ошибка доступа к боту: {e}")
+        if ADMIN_CHAT_ID:
+            await safe_send_message(application.bot, ADMIN_CHAT_ID, "❌ Бот не доступен! Проверьте TOKEN")
+        sys.exit(1)
 
     # Установка состояния бота
     BOT_STATE['running'] = True
@@ -1100,56 +1126,3 @@ async def main():
 
     # Запуск бота
     await application.run_polling(allowed_updates=Update.ALL_TYPES)
-
-if __name__ == '__main__':
-    try:
-        asyncio.run(main())
-    except Exception as e:
-        logger.critical(f"Критическая ошибка при запуске бота: {e}", exc_info=True)
-        sys.exit(1)
-
-
-
-            CallbackQueryHandler(back_to_start, pattern=\'^back_to_start$\'
-            ),
-            CommandHandler("cancel", cancel_command)
-        ]
-    )
-    application.add_handler(conv_handler)
-    application.add_handler(CommandHandler("moderate", moderate_command))
-
-    # Обработчик ошибок
-    application.add_error_handler(error_handler)
-
-    # Запуск планировщика APScheduler
-    global scheduler
-    scheduler = AsyncIOScheduler(timezone=TIMEZONE)
-    scheduler.add_job(check_pending_applications, \'interval\', minutes=1, args=(application.bot,))
-    scheduler.add_job(check_shutdown_time, \'interval\', minutes=1, args=(application.bot,))
-    scheduler.add_job(send_periodic_status, \'interval\', hours=1, args=(application.bot,))
-    scheduler.start()
-
-    # Установка состояния бота
-    BOT_STATE[\'running\'] = True
-    BOT_STATE[\'start_time\'] = datetime.now()
-    BOT_STATE[\'last_activity\'] = datetime.now()
-
-    # Регистрация обработчиков сигналов для корректного завершения
-    signal.signal(signal.SIGINT, handle_signal)
-    signal.signal(signal.SIGTERM, handle_signal)
-    atexit.register(lambda: asyncio.run(cleanup()))
-
-    logger.info("Бот запущен!")
-    await send_bot_status(application.bot, "Запущен")
-
-    # Запуск бота
-    await application.run_polling(allowed_updates=Update.ALL_TYPES)
-
-if __name__ == \'__main__\':
-    try:
-        asyncio.run(main())
-    except Exception as e:
-        logger.critical(f"Критическая ошибка при запуске бота: {e}", exc_info=True)
-        sys.exit(1)
-
-
