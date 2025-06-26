@@ -108,6 +108,7 @@ HOLIDAY_TEMPLATES = {
 # Состояния диалога
 (
     TYPE_SELECTION,
+    CONFIRM_TYPE_SELECTION,
     SENDER_NAME_INPUT,
     RECIPIENT_NAME_INPUT,
     CONGRAT_HOLIDAY_CHOICE,
@@ -116,7 +117,7 @@ HOLIDAY_TEMPLATES = {
     ANNOUNCE_SUBTYPE_SELECTION,
     ANNOUNCE_TEXT_INPUT,
     WAIT_CENSOR_APPROVAL
-) = range(9)
+) = range(10) # Увеличили диапазон на 1
 
 # --- Настройка логирования ---
 logging.basicConfig(
@@ -576,7 +577,7 @@ async def start_command(update: Update, context: CallbackContext) -> int:
     keyboard = []
     for key, info in REQUEST_TYPES.items():
         keyboard.append([InlineKeyboardButton(f"{info['icon']} {info['name']}", callback_data=key)])
-    keyboard += BACK_BUTTON  # Используем константу для кнопки возврата
+    # BACK_BUTTON здесь не нужен, так как это начальное меню
 
     # Используем safe_reply_text, чтобы корректно обработать как message, так и callback_query
     await safe_reply_text(update, text, reply_markup=InlineKeyboardMarkup(keyboard))
@@ -599,32 +600,62 @@ async def handle_type_selection(update: Update, context: CallbackContext) -> int
         logger.warning(f"Error answering callback query {query.id}: {e}")
 
     context.user_data["type"] = query.data
-    request_type = query.data
+    request_type_name = REQUEST_TYPES.get(query.data, {}).get("name", "выбранный тип")
 
-    keyboard_nav = [[InlineKeyboardButton("🔙 Вернуться в начало", callback_data="back_to_start")]]
+    keyboard = [
+        [InlineKeyboardButton("✅ Продолжить", callback_data="continue_flow")],
+        [InlineKeyboardButton("🔙 Вернуться в начало", callback_data="back_to_start")]
+    ]
 
-    if request_type == "congrat":
-        await safe_edit_message_text(query,
-            "Как вас зовут? (кто поздравляет, например: Внук Виталий)",
-            reply_markup=InlineKeyboardMarkup(keyboard_nav))
-        return SENDER_NAME_INPUT
-    elif request_type == "announcement":
-        keyboard = []
-        for key, name in ANNOUNCE_SUBTYPES.items():
-            keyboard.append([InlineKeyboardButton(name, callback_data=key)])
-        keyboard += keyboard_nav
-        await safe_edit_message_text(query,
-            "Выберите подтип объявления:",
-            reply_markup=InlineKeyboardMarkup(keyboard))
-        return ANNOUNCE_SUBTYPE_SELECTION
-    elif request_type == "news":
-        await safe_edit_message_text(query,
-            "Напишите текст новости (до 300 символов):",
-            reply_markup=InlineKeyboardMarkup(keyboard_nav))
-        return ANNOUNCE_TEXT_INPUT
+    await safe_edit_message_text(query,
+        f"Вы выбрали: {request_type_name}. Нажмите 'Продолжить', чтобы перейти к заполнению заявки, или 'Вернуться в начало', чтобы выбрать другой тип.",
+        reply_markup=InlineKeyboardMarkup(keyboard))
+
+    return CONFIRM_TYPE_SELECTION
+
+async def confirm_type_selection_and_proceed(update: Update, context: CallbackContext) -> int:
+    """Подтверждает выбор типа заявки и переходит к следующему шагу."""
+    query = update.callback_query
+    if not query or not query.data:
+        return ConversationHandler.END
+
+    try:
+        await query.answer()
+    except TelegramError as e:
+        logger.warning(f"Error answering callback query {query.id}: {e}")
+
+    if query.data == "continue_flow":
+        request_type = context.user_data.get("type")
+        keyboard_nav = InlineKeyboardMarkup(BACK_BUTTON)
+
+        if request_type == "congrat":
+            await safe_edit_message_text(query,
+                "Как вас зовут? (кто поздравляет, например: Внук Виталий)",
+                reply_markup=keyboard_nav)
+            return SENDER_NAME_INPUT
+        elif request_type == "announcement":
+            keyboard = []
+            for key, name in ANNOUNCE_SUBTYPES.items():
+                keyboard.append([InlineKeyboardButton(name, callback_data=key)])
+            keyboard.append(BACK_BUTTON[0]) # Добавляем только кнопку назад
+            await safe_edit_message_text(query,
+                "Выберите подтип объявления:",
+                reply_markup=InlineKeyboardMarkup(keyboard))
+            return ANNOUNCE_SUBTYPE_SELECTION
+        elif request_type == "news":
+            await safe_edit_message_text(query,
+                "Напишите текст новости (до 300 символов):",
+                reply_markup=keyboard_nav)
+            return ANNOUNCE_TEXT_INPUT
+        else:
+            await safe_edit_message_text(query, "❌ Неизвестный тип заявки. Возвращаемся в начало.")
+            return await start_command(update, context)
+    elif query.data == "back_to_start":
+        return await back_to_start(update, context)
     else:
-        await safe_edit_message_text(query, "❌ Неизвестный тип заявки. Возвращаемся в начало.")
-        return await start_command(update, context)
+        # Это не должно произойти
+        await safe_edit_message_text(query, "Неизвестный выбор. Пожалуйста, попробуйте еще раз.")
+        return CONFIRM_TYPE_SELECTION
 
 async def handle_sender_name_input(update: Update, context: CallbackContext) -> int:
     """Обрабатывает ввод имени отправителя для поздравления."""
@@ -634,8 +665,8 @@ async def handle_sender_name_input(update: Update, context: CallbackContext) -> 
         return SENDER_NAME_INPUT
 
     context.user_data["from_name"] = user_message
-    keyboard_nav = [[InlineKeyboardButton("🔙 Вернуться в начало", callback_data="back_to_start")]]
-    await safe_reply_text(update, "Кого поздравляем? (например: Бабушку Зину)", reply_markup=InlineKeyboardMarkup(keyboard_nav))
+    keyboard_nav = InlineKeyboardMarkup(BACK_BUTTON)
+    await safe_reply_text(update, "Кого поздравляем? (например: Бабушку Зину)", reply_markup=keyboard_nav)
     return RECIPIENT_NAME_INPUT
 
 async def handle_recipient_name_input(update: Update, context: CallbackContext) -> int:
@@ -652,7 +683,7 @@ async def handle_recipient_name_input(update: Update, context: CallbackContext) 
         if is_holiday_active(holiday_date):
             keyboard.append([InlineKeyboardButton(holiday_name, callback_data=f"holiday_{holiday_date}")])
     keyboard.append([InlineKeyboardButton("Написать свое поздравление", callback_data="custom_congrat")])
-    keyboard.append([InlineKeyboardButton("🔙 Вернуться в начало", callback_data="back_to_start")])
+    keyboard.append(BACK_BUTTON[0]) # Добавляем только кнопку назад
 
     await safe_reply_text(update, "Выберите праздник или напишите свое поздравление:", reply_markup=InlineKeyboardMarkup(keyboard))
     return CONGRAT_HOLIDAY_CHOICE
@@ -680,13 +711,13 @@ async def handle_congrat_holiday_choice(update: Update, context: CallbackContext
 
     elif query.data == "custom_congrat":
         context.user_data["congrat_type"] = "custom"
-        keyboard_nav = [[InlineKeyboardButton("🔙 Вернуться в начало", callback_data="back_to_start")]]
-        await safe_edit_message_text(query, "Напишите текст вашего поздравления (до 500 символов):", reply_markup=InlineKeyboardMarkup(keyboard_nav))
+        keyboard_nav = InlineKeyboardMarkup(BACK_BUTTON)
+        await safe_edit_message_text(query, "Напишите текст вашего поздравления (до 500 символов):", reply_markup=keyboard_nav)
         return CUSTOM_CONGRAT_MESSAGE_INPUT
     else:
         # Это не должно произойти при корректной работе, но на всякий случай
-        keyboard_nav = [[InlineKeyboardButton("🔙 Вернуться в начало", callback_data="back_to_start")]]
-        await safe_edit_message_text(query, "Неизвестный выбор. Пожалуйста, попробуйте еще раз.", reply_markup=InlineKeyboardMarkup(keyboard_nav))
+        keyboard_nav = InlineKeyboardMarkup(BACK_BUTTON)
+        await safe_edit_message_text(query, "Неизвестный выбор. Пожалуйста, попробуйте еще раз.", reply_markup=keyboard_nav)
         return CONGRAT_HOLIDAY_CHOICE
 
 async def handle_custom_congrat_message_input(update: Update, context: CallbackContext) -> int:
@@ -697,8 +728,8 @@ async def handle_custom_congrat_message_input(update: Update, context: CallbackC
         return CUSTOM_CONGRAT_MESSAGE_INPUT
 
     context.user_data["text"] = user_message
-    keyboard_nav = [[InlineKeyboardButton("🔙 Вернуться в начало", callback_data="back_to_start")]]
-    await safe_reply_text(update, "На какую дату опубликовать поздравление? (в формате ДД.ММ.ГГГГ, например 01.01.2025)", reply_markup=InlineKeyboardMarkup(keyboard_nav))
+    keyboard_nav = InlineKeyboardMarkup(BACK_BUTTON)
+    await safe_reply_text(update, "На какую дату опубликовать поздравление? (в формате ДД.ММ.ГГГГ, например 01.01.2025)", reply_markup=keyboard_nav)
     return CONGRAT_DATE_INPUT
 
 async def handle_congrat_date_input(update: Update, context: CallbackContext) -> int:
@@ -728,8 +759,8 @@ async def handle_announce_subtype_selection(update: Update, context: CallbackCon
         logger.warning(f"Error answering callback query {query.id}: {e}")
 
     context.user_data["subtype"] = query.data
-    keyboard_nav = [[InlineKeyboardButton("🔙 Вернуться в начало", callback_data="back_to_start")]]
-    await safe_edit_message_text(query, "Напишите текст объявления (до 4000 символов):", reply_markup=InlineKeyboardMarkup(keyboard_nav))
+    keyboard_nav = InlineKeyboardMarkup(BACK_BUTTON)
+    await safe_edit_message_text(query, "Напишите текст объявления (до 4000 символов):", reply_markup=keyboard_nav)
     return ANNOUNCE_TEXT_INPUT
 
 async def handle_announce_text_input(update: Update, context: CallbackContext) -> int:
@@ -775,7 +806,7 @@ async def confirm_application(update: Update, context: CallbackContext) -> int:
         [InlineKeyboardButton("✏️ Редактировать", callback_data="edit_application")],
         [InlineKeyboardButton("❌ Отменить", callback_data="cancel_application")]
     ]
-    keyboard += BACK_BUTTON
+    keyboard.append(BACK_BUTTON[0]) # Добавляем только кнопку назад
 
     await safe_reply_text(update, f"Пожалуйста, проверьте вашу заявку:\n\n{summary_text}\n\nВсе верно?", reply_markup=InlineKeyboardMarkup(keyboard))
     return WAIT_CENSOR_APPROVAL
@@ -836,18 +867,18 @@ async def handle_confirmation(update: Update, context: CallbackContext) -> int:
         context.user_data.clear() # Очищаем все, кроме типа
         context.user_data["type"] = app_type
 
-        keyboard_nav = [[InlineKeyboardButton("🔙 Вернуться в начало", callback_data="back_to_start")]]
+        keyboard_nav = InlineKeyboardMarkup(BACK_BUTTON)
 
         if app_type == "congrat":
             await safe_edit_message_text(query,
                 "Как вас зовут? (кто поздравляет, например: Внук Виталий)",
-                reply_markup=InlineKeyboardMarkup(keyboard_nav))
+                reply_markup=keyboard_nav)
             return SENDER_NAME_INPUT
         elif app_type == "announcement":
             keyboard = []
             for key, name in ANNOUNCE_SUBTYPES.items():
                 keyboard.append([InlineKeyboardButton(name, callback_data=key)])
-            keyboard += keyboard_nav
+            keyboard.append(BACK_BUTTON[0]) # Добавляем только кнопку назад
             await safe_edit_message_text(query,
                 "Выберите подтип объявления:",
                 reply_markup=InlineKeyboardMarkup(keyboard))
@@ -855,7 +886,7 @@ async def handle_confirmation(update: Update, context: CallbackContext) -> int:
         elif app_type == "news":
             await safe_edit_message_text(query,
                 "Напишите текст новости (до 300 символов):",
-                reply_markup=InlineKeyboardMarkup(keyboard_nav))
+                reply_markup=keyboard_nav)
             return ANNOUNCE_TEXT_INPUT
         else:
             # Если тип заявки потерян или некорректен, возвращаем в начало
@@ -1055,6 +1086,9 @@ async def main():
             TYPE_SELECTION: [
                 CallbackQueryHandler(handle_type_selection, pattern='^(congrat|announcement|news)$')
             ],
+            CONFIRM_TYPE_SELECTION: [
+                CallbackQueryHandler(confirm_type_selection_and_proceed, pattern='^(continue_flow|back_to_start)$')
+            ],
             SENDER_NAME_INPUT: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_sender_name_input)
             ],
@@ -1126,3 +1160,5 @@ async def main():
 
     # Запуск бота
     await application.run_polling(allowed_updates=Update.ALL_TYPES)
+
+
