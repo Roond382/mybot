@@ -121,7 +121,7 @@ HOLIDAY_TEMPLATES = {
 # --- Настройка логирования ---
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO,
+    level=logging.DEBUG,
     handlers=[
         logging.FileHandler('bot.log'),
         logging.StreamHandler()
@@ -585,8 +585,12 @@ async def handle_type_selection(update: Update, context: CallbackContext) -> int
     """Обрабатывает выбор типа заявки пользователем."""
     query = update.callback_query
     if not query or not query.data:
+        logger.warning("Пустой callback_query или data в handle_type_selection.")
         return ConversationHandler.END
-        
+
+    logger.info(f"Пользователь @{query.from_user.username if query.from_user else 'N/A'} выбрал тип заявки: {query.data}")
+    logger.debug(f"Текущее user_data в handle_type_selection: {context.user_data}")
+
     try:
         await query.answer() # Всегда отвечаем на callback query
     except TelegramError as e:
@@ -860,9 +864,24 @@ async def handle_confirmation(update: Update, context: CallbackContext) -> int:
         context.user_data.clear()
         return ConversationHandler.END
 
-    elif query.data == "back_to_start":
-        context.user_data.clear()
-        return await start_command(update, context)
+async def back_to_start(update: Update, context: CallbackContext) -> int:
+    """Полный сброс состояния и возврат в главное меню."""
+    user = update.effective_user
+    logger.info(f"Пользователь @{user.username if user else 'N/A'} инициировал возврат в начало.")
+    logger.debug(f"Состояние user_data до очистки: {context.user_data}")
+    context.user_data.clear()
+    logger.debug(f"Состояние user_data после очистки: {context.user_data}")
+
+    if update.callback_query:
+        try:
+            await update.callback_query.answer()
+            logger.debug(f"Ответ на callback_query {update.callback_query.id} в back_to_start.")
+        except TelegramError as e:
+            logger.warning(f"Ошибка при ответе на callback в back_to_start: {e}")
+
+    result = await start_command(update, context)
+    logger.info(f"back_to_start завершен, переход в состояние: {result}")
+    return result
 
 async def moderate_command(update: Update, context: CallbackContext) -> None:
     """Обработчик команды /moderate для администратора."""
@@ -873,7 +892,16 @@ async def moderate_command(update: Update, context: CallbackContext) -> None:
     args = context.args
     if not args or len(args) != 1:
         await safe_reply_text(update, "Использование: /moderate <app_id>")
+
+    except ValueError:
+        await safe_reply_text(update, "ID заявки должен быть числом.")
         return
+
+    app_details = get_application_details(app_id)
+
+    if not app_details:
+        await safe_reply_text(update, f"Заявка с ID {app_id} не найдена.")
+
 
     try:
         app_id = int(args[0])
