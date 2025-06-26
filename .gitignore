@@ -1,2 +1,5 @@
-"батина папка/FILE0919.MOV" 
-"батина папка/FILE0919.MOV" 
+venv/
+__pycache__
+*.pyc
+*.db
+.env
