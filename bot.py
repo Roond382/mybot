@@ -1297,16 +1297,29 @@ def main() -> None:
         )
         scheduler.start()
 
-        # Запуск бота
-        logger.info("Запуск бота...")
-        application.run_polling(
-            allowed_updates=Update.ALL_TYPES,
-            close_loop=False
-        )
+        # Запуск бота в режиме вебхука на Render
+        if WEBHOOK_URL:
+            logger.info("Запуск в режиме вебхука...")
+            await application.initialize()
+            await application.start()
+            await application.updater.start_webhook(
+                listen="0.0.0.0",
+                port=PORT,
+                url_path=TOKEN,
+                webhook_url=f"{WEBHOOK_URL}/{TOKEN}"
+            )
+            logger.info(f"Вебхук запущен на порту {PORT}")
+            
+            # Бесконечный цикл для поддержания работы
+            while True:
+                await asyncio.sleep(3600)
+        else:
+            logger.info("Запуск в режиме polling...")
+            application.run_polling(
+                allowed_updates=Update.ALL_TYPES,
+                close_loop=False
+            )
 
     except Exception as e:
         logger.critical(f"Критическая ошибка при запуске: {e}", exc_info=True)
         sys.exit(1)
-
-if __name__ == '__main__':
-    main()
