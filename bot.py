@@ -35,7 +35,24 @@ from telegram.ext import (
     CallbackQueryHandler,
     filters,
 )
+import signal
+from fastapi import FastAPI
 
+app = FastAPI()
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    await cleanup()
+
+def handle_signal(signum, frame):
+    """Обработчик сигналов завершения работы"""
+    logger.info(f"Получен сигнал {signum}, инициируем завершение работы...")
+    loop = asyncio.get_event_loop()
+    loop.create_task(cleanup())
+    loop.stop()
+
+signal.signal(signal.SIGTERM, handle_signal)
+signal.signal(signal.SIGINT, handle_signal)
 # Инициализация окружения
 load_dotenv()
 
@@ -143,16 +160,12 @@ async def cleanup():
 def handle_signal(signum, frame):
     """Обработчик сигналов завершения работы"""
     logger.info(f"Получен сигнал {signum}, инициируем завершение работы...")
-    BOT_STATE['running'] = False
-    
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    
-    try:
-        loop.run_until_complete(cleanup())
-    finally:
-        loop.close()
-        sys.exit(0)
+    loop = asyncio.get_event_loop()
+    loop.create_task(cleanup())
+    loop.stop()
+
+signal.signal(signal.SIGTERM, handle_signal)
+signal.signal(signal.SIGINT, handle_signal)
 
 def is_working_hours() -> bool:
     """Проверяет, находится ли текущее время в рабочих часах"""
