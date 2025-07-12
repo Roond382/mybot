@@ -1,5 +1,5 @@
-python-telegram-bot==13.7
-apscheduler==3.6.3
+python-telegram-bot==20.3
 python-dotenv==1.0.0
 pytz==2023.3
+APScheduler==3.10.0
 aiofiles==23.2.1
