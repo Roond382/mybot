@@ -34,16 +34,16 @@ from telegram.ext import (
     CallbackQueryHandler,
     filters,
 )
-BACK_BUTTON = [[InlineKeyboardButton("🔙 Вернуться в начало", callback_data="back_to_start")]]
 
-# Глобальная переменная для отслеживания состояния
-BOT_STATE = {
-    'running': False,
-    'start_time': None,
-    'last_activity': None
-}
+# Инициализация окружения
+load_dotenv()
+
+# Конфигурация для Render
+PORT = int(os.environ.get('PORT', 8443))
+WEBHOOK_URL = os.environ.get('WEBHOOK_URL', '')
 
 # Константы
+BACK_BUTTON = [[InlineKeyboardButton("🔙 Вернуться в начало", callback_data="back_to_start")]]
 DB_FILE = 'db.sqlite'
 BAD_WORDS_FILE = 'bad_words.txt'
 DEFAULT_BAD_WORDS = ["хуй", "пизда", "блять", "блядь", "ебать", "сука"]
@@ -53,13 +53,19 @@ MAX_CONGRAT_TEXT_LENGTH = 500
 MAX_ANNOUNCE_NEWS_TEXT_LENGTH = 300
 CHANNEL_NAME = "Небольшой Мир: Николаевск"
 
+# Глобальная переменная для отслеживания состояния
+BOT_STATE = {
+    'running': False,
+    'start_time': None,
+    'last_activity': None
+}
+
 # Настройки из .env
-load_dotenv()
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHANNEL_ID = int(os.getenv("CHANNEL_ID")) if os.getenv("CHANNEL_ID") else None
 ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID")) if os.getenv("ADMIN_CHAT_ID") else None
 TIMEZONE = pytz.timezone('Europe/Moscow')
-WORKING_HOURS = (0, 23)  # 00:00-23:59 (круглосуточно)
+WORKING_HOURS = (0, 23)
 WORK_ON_WEEKENDS = True
 
 # Проверка обязательных переменных окружения
@@ -116,7 +122,7 @@ HOLIDAY_TEMPLATES = {
     WAIT_CENSOR_APPROVAL
 ) = range(9)
 
-# --- Настройка логирования ---
+# Настройка логирования
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO,
@@ -136,7 +142,6 @@ async def cleanup():
     BOT_STATE['running'] = False
 
     try:
-        # Отправка статуса администратору
         if ADMIN_CHAT_ID:
             bot = Bot(token=TOKEN)
             try:
@@ -148,7 +153,6 @@ async def cleanup():
     except Exception as e:
         logger.error(f"Ошибка при создании бота для отправки статуса: {e}")
 
-    # Остановка планировщика
     if 'scheduler' in globals():
         try:
             scheduler.shutdown(wait=False)
@@ -156,7 +160,6 @@ async def cleanup():
         except Exception as e:
             logger.error(f"Ошибка остановки планировщика: {e}")
 
-    # Закрытие сокета
     if 'lock_socket' in globals():
         try:
             lock_socket.close()
@@ -169,7 +172,6 @@ def handle_signal(signum, frame):
     logger.info(f"Получен сигнал {signum}, инициируем завершение работы...")
     BOT_STATE['running'] = False
     
-    # Создаем новый event loop для корректного завершения
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     
@@ -180,19 +182,17 @@ def handle_signal(signum, frame):
         sys.exit(0)
 
 def is_working_hours() -> bool:
-    """Проверяет, находится ли текущее время в рабочих часах (8:00-23:00 по Москве)"""
+    """Проверяет, находится ли текущее время в рабочих часах"""
     now = datetime.now(TIMEZONE)
 
-    # Проверка рабочего времени
     if not (WORKING_HOURS[0] <= now.hour < WORKING_HOURS[1]):
         return False
 
-    # Проверка выходных, если WORK_ON_WEEKENDS = False
-    if not WORK_ON_WEEKENDS and now.weekday() >= 5:  # 5 и 6 - суббота и воскресенье
+    if not WORK_ON_WEEKENDS and now.weekday() >= 5:
         return False
 
     return True
-    # --- Функции работы с БД ---
+
 def get_db_connection() -> sqlite3.Connection:
     """Устанавливает соединение с базой данных."""
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
@@ -310,33 +310,6 @@ def mark_application_as_published(app_id: int) -> bool:
         logger.error(f"Ошибка публикации заявки #{app_id}: {e}", exc_info=True)
         return False
 
-# --- Валидация и цензура ---
-def validate_name(name: str) -> bool:
-    """Проверяет валидность имени."""
-    if not name or not name.strip():
-        return False
-
-    name = name.strip()
-    allowed_chars = set("абвгдеёжзийклмнопрстуфхцчшщъыьэюяАБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ -")
-    return (2 <= len(name) <= MAX_NAME_LENGTH and
-            all(c in allowed_chars for c in name) and
-            not name.startswith('-') and
-            not name.endswith('-') and
-            '--' not in name)
-
-def is_holiday_active(holiday_date_str: str) -> bool:
-    """Проверяет, активен ли праздник (+/-5 дней от даты)."""
-    try:
-        current_year = datetime.now().year
-        holiday_date = datetime.strptime(f"{current_year}-{holiday_date_str}", "%Y-%m-%d").date()
-        today = datetime.now().date()
-        start = holiday_date - timedelta(days=5)
-        end = holiday_date + timedelta(days=5)
-        return start <= today <= end
-    except Exception as e:
-        logger.error(f"Ошибка проверки праздника: {e}", exc_info=True)
-        return False
-
 async def load_bad_words() -> list:
     """Асинхронно загружает список запрещенных слов."""
     try:
@@ -364,7 +337,6 @@ async def censor_text(text: str) -> Tuple[str, bool]:
         except re.error as e:
             logger.error(f"Ошибка цензуры слова '{word}': {e}\nТекст: {text[:100]}...", exc_info=True)
 
-    # Цензура контактной информации
     try:
         censored = re.sub(
             r'(звоните|пишите|телефон|номер|тел\.?|т\.)[:;\s]*([\+\d\(\).\s-]{7,})',
@@ -376,7 +348,7 @@ async def censor_text(text: str) -> Tuple[str, bool]:
         logger.error(f"Ошибка цензуры контактов: {e}", exc_info=True)
 
     return censored, has_bad
-    # --- Вспомогательные функции ---
+
 async def safe_send_message(bot: Bot, chat_id: int, text: str, **kwargs) -> bool:
     """Отправляет сообщение с подробной обработкой ошибок."""
     try:
@@ -432,9 +404,8 @@ async def send_bot_status(bot: Bot, status: str, force_send: bool = False) -> bo
             disable_notification=True
         )
         return True
-    except TelegramError as e: # Изменено с telegram.error.RetryAfter на TelegramError для более общего отлова
+    except TelegramError as e:
         logger.warning(f"Превышен лимит сообщений или другая ошибка Telegram: {e}")
-        # Если это RetryAfter, можно добавить задержку, но для общего случая просто логируем
         return False
     except Exception as e:
         logger.error(f"Ошибка отправки статуса: {str(e)}")
@@ -464,40 +435,31 @@ async def publish_to_channel(app_id: int, bot: Bot) -> bool:
         return False
 
 async def check_pending_applications(context: CallbackContext) -> None:
-    """Проверяет и публикует одобренные, но еще не опубликованные заявки,
-    особенно те, которые должны быть опубликованы по расписанию."""
+    """Проверяет и публикует одобренные заявки."""
     applications = get_approved_unpublished_applications()
     for app in applications:
-        # Обрабатываем только "свои поздравления" с датой публикации, которая наступила
         if app['type'] == 'congrat' and app['congrat_type'] == 'custom':
             if app['publish_date']:
                 publish_date_obj = datetime.strptime(app['publish_date'], "%Y-%m-%d").date()
                 today = datetime.now().date()
-                if publish_date_obj <= today: # Если дата публикации сегодня или раньше
+                if publish_date_obj <= today:
                     logger.info(f"Плановая публикация пользовательского поздравления #{app['id']} (дата подошла).")
                     await publish_to_channel(app['id'], context.bot)
                     await asyncio.sleep(1)
-                # else: дата в будущем, пока ничего не делаем
             else:
-                # Этот случай должен быть обработан немедленной публикацией при одобрении.
-                # Если заявка все еще здесь без даты, это запасной вариант.
                 logger.warning(f"Пользовательское поздравление #{app['id']} без даты публикации в check_pending_applications. Публикуем немедленно.")
                 await publish_to_channel(app['id'], context.bot)
                 await asyncio.sleep(1)
-        # Для других типов (новости, объявления, стандартные поздравления)
-        # они должны были быть опубликованы немедленно при одобрении.
-        # Если они все еще здесь в статусе 'approved' и 'unpublished',
-        # это означает, что немедленная публикация не удалась. Публикуем их сейчас как запасной вариант.
         elif app['type'] in ['news', 'announcement'] or (app['type'] == 'congrat' and app['congrat_type'] != 'custom'):
             logger.warning(f"Заявка #{app['id']} типа '{app['type']}' не была опубликована немедленно после одобрения. Публикуем сейчас.")
             await publish_to_channel(app['id'], context.bot)
             await asyncio.sleep(1)
 
 async def check_shutdown_time(context: CallbackContext) -> None:
-    """Проверяет, не вышло ли время работы бота (23:00) и корректно останавливает его"""
+    """Проверяет, не вышло ли время работы бота и корректно останавливает его"""
     if not is_working_hours():
         logger.info("Рабочее время закончилось. Останавливаем бота.")
-        await send_bot_status(context.bot, "Остановка (рабочее время закончилось)") # Исправлено: передаем context.bot
+        await send_bot_status(context.bot, "Остановка (рабочее время закончилось)")
         
         try:
             await context.application.stop()
@@ -506,61 +468,38 @@ async def check_shutdown_time(context: CallbackContext) -> None:
             logger.error(f"Ошибка при остановке бота: {e}")
             os._exit(1)
 
-def check_environment():
+def check_environment() -> bool:
     """Проверяет наличие всех необходимых файлов и переменных"""
-    required_files = [DB_FILE, BAD_WORDS_FILE]
-    missing_files = [f for f in required_files if not os.path.exists(f)]
-
-    if missing_files:
-        logger.error(f"Отсутствуют файлы: {missing_files}")
-        if ADMIN_CHAT_ID:
-            # Создаем новый объект Bot для отправки сообщения, так как application еще может быть не запущен
-            temp_bot = Bot(token=TOKEN)
-            asyncio.run(safe_send_message(
-                temp_bot,
-                ADMIN_CHAT_ID,
-                f"❌ Отсутствуют файлы: {', '.join(missing_files)}"
-            ))
-            asyncio.run(temp_bot.close()) # Закрываем бота после использования
-        return False
-    return True
-
-def check_bot_health():
-    """Проверяет все критические компоненты перед запуском"""
     checks = {
         "База данных": os.path.exists(DB_FILE),
         "Файл запрещенных слов": os.path.exists(BAD_WORDS_FILE),
-        "Переменные окружения": all([TOKEN, CHANNEL_ID, ADMIN_CHAT_ID]),
+        "Токен бота": bool(TOKEN),
+        "ID канала": bool(CHANNEL_ID),
         "Часовой пояс": str(datetime.now(TIMEZONE))
     }
 
     for name, status in checks.items():
         logger.info(f"{name}: {'OK' if status else 'ERROR'}")
         if not status and name != "Файл запрещенных слов":
-            raise RuntimeError(f"Проверка не пройдена: {name}")
-            # --- Обработчики команд ---
+            return False
+    return True
+
 async def start_command(update: Update, context: CallbackContext) -> int:
-    """
-    Обработчик команды /start с очисткой состояния.
-    Теперь всегда сразу показывает выбор типа заявки, независимо от deep link.
-    """
+    """Обработчик команды /start с очисткой состояния."""
     user = update.effective_user
     logger.info(f"Пользователь @{user.username if user else 'N/A'} запустил бота")
-    context.user_data.clear() # Всегда очищаем состояние при старте, чтобы избежать зависаний
+    context.user_data.clear()
 
-    # Эта часть кода теперь выполняется всегда, независимо от наличия deep link
     text = "Выберите тип заявки:"
     keyboard = []
     for key, info in REQUEST_TYPES.items():
         keyboard.append([InlineKeyboardButton(f"{info['icon']} {info['name']}", callback_data=key)])
-    keyboard += BACK_BUTTON  # Используем константу для кнопки возврата
+    keyboard += BACK_BUTTON
 
-    # Используем safe_reply_text, чтобы корректно обработать как message, так и callback_query
     await safe_reply_text(update, text, reply_markup=InlineKeyboardMarkup(keyboard))
 
-    return TYPE_SELECTION     
+    return TYPE_SELECTION
 
-    
 async def handle_type_selection(update: Update, context: CallbackContext) -> int:
     """Обрабатывает выбор типа заявки пользователем."""
     query = update.callback_query
@@ -600,6 +539,7 @@ async def handle_type_selection(update: Update, context: CallbackContext) -> int
     else:
         await safe_edit_message_text(query, "❌ Неизвестный тип заявки.")
         return ConversationHandler.END
+
 async def get_sender_name(update: Update, context: CallbackContext) -> int:
     """Получает имя отправителя для поздравления."""
     if not update.message or not update.message.text or not update.message.text.strip():
@@ -652,19 +592,10 @@ async def get_recipient_name(update: Update, context: CallbackContext) -> int:
     return CONGRAT_HOLIDAY_CHOICE
 
 async def back_to_start(update: Update, context: CallbackContext) -> int:
-    """Полный сброс состояния и возврат в главное меню.
-    
-    Args:
-        update: Объект Update от Telegram API
-        context: Контекст обратного вызова
-        
-    Returns:
-        int: Новое состояние (результат start_command)
-    """
+    """Полный сброс состояния и возврат в главное меню."""
     context.user_data.clear()
     user = update.effective_user
     logger.info(f"Пользователь @{user.username if user else 'N/A'} вернулся в начало")
-    # Если это callback_query, нужно ответить на него, чтобы убрать "часики"
     if update.callback_query:
         try:
             await update.callback_query.answer()
@@ -673,22 +604,10 @@ async def back_to_start(update: Update, context: CallbackContext) -> int:
     return await start_command(update, context)
 
 async def cancel_command(update: Update, context: CallbackContext) -> int:
-    """
-    Обработчик команды /cancel для отмены текущего действия.
-    Полностью сбрасывает состояние диалога и возвращает пользователя в начало.
-    
-    Параметры:
-        update: Объект с данными входящего сообщения/кнопки
-        context: Хранит данные между шагами диалога
-        
-    Возвращает:
-        int: Код завершения диалога (ConversationHandler.END)
-    """
-    # Получаем информацию о пользователе для логов
+    """Обработчик команды /cancel для отмены текущего действия."""
     user = update.effective_user
     logger.info(f"Пользователь @{user.username if user else 'N/A'} отменил действие")
     
-    # Отправляем сообщение об отмене с кнопкой возврата
     await safe_reply_text(
         update,
         "❌ Текущее действие отменено. Возвращаемся в главное меню.",
@@ -697,13 +616,10 @@ async def cancel_command(update: Update, context: CallbackContext) -> int:
         ])
     )
     
-    # Полная очистка временных данных пользователя
     context.user_data.clear()
     
-    # Завершаем текущий диалог и перенаправляем на start_command через back_to_start
-    return await back_to_start(update, context) # Изменено: вызываем back_to_start для единообразия
-    
-    
+    return await back_to_start(update, context)
+
 async def handle_congrat_holiday_choice(update: Update, context: CallbackContext) -> int:
     """Обрабатывает выбор праздника для поздравления."""
     query = update.callback_query
@@ -730,7 +646,7 @@ async def handle_congrat_holiday_choice(update: Update, context: CallbackContext
             reply_markup=InlineKeyboardMarkup(keyboard_nav))
         return CONGRAT_DATE_INPUT
     
-    if query.data == "custom_congrat": # Добавлена обработка custom_congrat здесь
+    if query.data == "custom_congrat":
         return await process_custom_congrat_message(update, context)
 
     holiday = query.data.replace("holiday_", "")
@@ -745,7 +661,7 @@ async def handle_congrat_holiday_choice(update: Update, context: CallbackContext
 
     holiday_date_str = HOLIDAYS[holiday]
     if not is_holiday_active(holiday_date_str):
-        current_year = datetime.now().year # Убедимся, что год актуален
+        current_year = datetime.now().year
         holiday_date_obj = datetime.strptime(f"{current_year}-{holiday_date_str}", "%Y-%m-%d")
         start_date = (holiday_date_obj - timedelta(days=5)).strftime("%d.%m")
         end_date = (holiday_date_obj + timedelta(days=5)).strftime("%d.%m")
@@ -799,17 +715,13 @@ async def handle_congrat_holiday_choice(update: Update, context: CallbackContext
 async def process_custom_congrat_message(update: Update, context: CallbackContext) -> int:
     """Обрабатывает ввод пользовательского поздравления."""
     query = update.callback_query
-    if not query:
-        # Если это не callback_query, а прямой вызов, то просто продолжаем
-        pass
-    else:
+    if query:
         try:
             await query.answer()
         except TelegramError as e:
             logger.warning(f"Ошибка ответа на callback: {e}")
 
     context.user_data["congrat_type"] = "custom"
-    # Используем safe_reply_text, чтобы обработать как message, так и callback_query
     await safe_reply_text(update,
         f"Введите текст поздравления (до {MAX_TEXT_LENGTH} символов):",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Вернуться в начало", callback_data="back_to_start")]]))
@@ -855,7 +767,6 @@ async def process_congrat_text(update: Update, context: CallbackContext) -> int:
             ]))
         return WAIT_CENSOR_APPROVAL
 
-    # Если цензура не нужна, сразу переходим к выбору даты
     keyboard = [
         [InlineKeyboardButton("📅 Опубликовать сегодня", callback_data="publish_today")],
         [InlineKeyboardButton("🗓️ Указать другую дату", callback_data="custom_date")],
@@ -866,7 +777,6 @@ async def process_congrat_text(update: Update, context: CallbackContext) -> int:
         "Выберите дату публикации:",
         reply_markup=InlineKeyboardMarkup(keyboard))
     return CONGRAT_DATE_INPUT
-
 
 async def back_to_holiday_choice(update: Update, context: CallbackContext) -> int:
     """Возвращает к выбору праздника."""
@@ -889,6 +799,7 @@ async def back_to_holiday_choice(update: Update, context: CallbackContext) -> in
         "Выберите праздник для поздравления:",
         reply_markup=InlineKeyboardMarkup(keyboard))
     return CONGRAT_HOLIDAY_CHOICE
+
 async def handle_announce_subtype_selection(update: Update, context: CallbackContext) -> int:
     """Обрабатывает выбор подтипа объявления."""
     query = update.callback_query
@@ -987,14 +898,14 @@ async def handle_censor_choice(update: Update, context: CallbackContext) -> int:
     if choice == "accept":
         if current_type == "congrat" and context.user_data.get("congrat_type") == "custom":
             keyboard_nav_date = [
-                [InlineKeyboardButton("📅 Опубликовать сегодня", callback_data="publish_today")], # Добавлено
-                [InlineKeyboardButton("🗓️ Указать другую дату", callback_data="custom_date")], # Добавлено
+                [InlineKeyboardButton("📅 Опубликовать сегодня", callback_data="publish_today")],
+                [InlineKeyboardButton("🗓️ Указать другую дату", callback_data="custom_date")],
                 [InlineKeyboardButton("🔙 Вернуться к вводу текста", callback_data="back_to_custom_message")],
                 [InlineKeyboardButton("🔙 Вернуться к выбору праздника", callback_data="back_to_holiday_choice")],
                 [InlineKeyboardButton("🔙 Вернуться в начало", callback_data="back_to_start")]
             ]
             await safe_edit_message_text(query,
-                "Текст принят с изменениями фильтра. Выберите дату публикации:", # Изменено сообщение
+                "Текст принят с изменениями фильтра. Выберите дату публикации:",
                 reply_markup=InlineKeyboardMarkup(keyboard_nav_date))
             return CONGRAT_DATE_INPUT
         else:
@@ -1028,9 +939,9 @@ async def handle_censor_choice(update: Update, context: CallbackContext) -> int:
 
 async def process_congrat_date(update: Update, context: CallbackContext) -> int:
     """Обрабатывает ввод даты публикации для поздравления."""
-    keyboard_nav = [ # Перенесено сюда, чтобы было доступно для всех путей
+    keyboard_nav = [
         [InlineKeyboardButton("🔙 Вернуться к тексту", callback_data="back_to_custom_message")],
-        [InlineKeyboardButton("🔙 Вернуться к выбору праздника", callback_data="back_to_holiday_choice")], # Добавлено
+        [InlineKeyboardButton("🔙 Вернуться к выбору праздника", callback_data="back_to_holiday_choice")],
         [InlineKeyboardButton("🔙 Вернуться в начало", callback_data="back_to_start")]
     ]
 
@@ -1041,10 +952,10 @@ async def process_congrat_date(update: Update, context: CallbackContext) -> int:
         except TelegramError as e:
             logger.warning(f"Ошибка при ответе на callback: {e}")
 
-        if callback_data == "publish_today": # Добавлена обработка кнопки "Опубликовать сегодня"
+        if callback_data == "publish_today":
             context.user_data["publish_date"] = datetime.now().strftime("%Y-%m-%d")
             return await complete_request(update, context)
-        elif callback_data == "custom_date": # Добавлена обработка кнопки "Указать другую дату"
+        elif callback_data == "custom_date":
             await safe_edit_message_text(update.callback_query,
                 "📅 Введите дату публикации в формате ДД-ММ-ГГГГ или 'сегодня':",
                 reply_markup=InlineKeyboardMarkup(keyboard_nav))
@@ -1055,7 +966,7 @@ async def process_congrat_date(update: Update, context: CallbackContext) -> int:
             return await back_to_holiday_choice(update, context)
         elif callback_data == "back_to_custom_message":
             return await back_to_custom_message(update, context)
-        else: # Если пришел неизвестный callback, остаемся в этом состоянии
+        else:
             await safe_edit_message_text(update.callback_query,
                 "❌ Неизвестная кнопка. Пожалуйста, введите дату или выберите из предложенных вариантов.",
                 reply_markup=InlineKeyboardMarkup(keyboard_nav))
@@ -1108,6 +1019,7 @@ async def back_to_custom_message(update: Update, context: CallbackContext) -> in
             [InlineKeyboardButton("🔙 Вернуться в начало", callback_data="back_to_start")]
         ]))
     return CUSTOM_CONGRAT_MESSAGE_INPUT
+
 async def notify_admin_new_application(bot: Bot, app_id: int, app_details: dict) -> None:
     """Уведомляет администратора о новой заявке."""
     if not ADMIN_CHAT_ID:
@@ -1159,22 +1071,16 @@ async def handle_admin_decision(update: Update, context: CallbackContext) -> Non
         should_publish_immediately = True
         publication_reason = "по умолчанию (объявление, новость или поздравление на сегодня/прошлое)"
 
-        # Проверяем, является ли это "своим поздравлением" с будущей датой публикации
         if app_details['type'] == 'congrat' and app_details['congrat_type'] == 'custom':
             if app_details['publish_date']:
                 publish_date_obj = datetime.strptime(app_details['publish_date'], "%Y-%m-%d").date()
                 today = datetime.now().date()
-                if publish_date_obj > today: # Если дата публикации в будущем
+                if publish_date_obj > today:
                     should_publish_immediately = False
                     publication_reason = f"по расписанию (дата: {app_details['publish_date']})"
-                # else: Дата сегодня или в прошлом, should_publish_immediately остается True
-            # else: Нет даты публикации для custom congrat, should_publish_immediately остается True
         
-        # Для всех остальных типов (news, announcement, non-custom congrat)
-        # should_publish_immediately остается True, и publication_reason будет "по умолчанию"
-
         if should_publish_immediately:
-            logger.info(f"Попытка немедленной публикации заявки #{app_id} (Тип: {app_details['type']}, Подтип: {app_details['subtype'] or 'N/A'}). Причина: {publication_reason}.") # ИСПРАВЛЕНО ЗДЕСЬ
+            logger.info(f"Попытка немедленной публикации заявки #{app_id} (Тип: {app_details['type']}, Подтип: {app_details['subtype'] or 'N/A'}). Причина: {publication_reason}.")
             await publish_to_channel(app_id, context.bot)
         else:
             logger.info(f"Заявка #{app_id} одобрена, но будет опубликована позже. Причина: {publication_reason}.")
@@ -1214,7 +1120,7 @@ async def notify_user_about_decision(bot: Bot, app_details: dict, approved: bool
         )
 
     await safe_send_message(bot, user_id, text)
-    
+
 async def complete_request(update: Update, context: CallbackContext, text: str = None) -> int:
     """Завершает создание заявки и отправляет на модерацию"""
     try:
@@ -1242,7 +1148,6 @@ async def complete_request(update: Update, context: CallbackContext, text: str =
             'status': 'pending'
         }
 
-        # Дополнительные поля для разных типов заявок
         if user_data['type'] == 'congrat':
             app_data.update({
                 'from_name': user_data.get('from_name', ''),
@@ -1253,7 +1158,6 @@ async def complete_request(update: Update, context: CallbackContext, text: str =
         elif user_data['type'] == 'announcement':
             app_data['subtype'] = user_data.get('subtype')
 
-        # Сохранение в БД
         app_id = add_application(app_data)
         if not app_id:
             raise ValueError("Не удалось сохранить заявку в БД")
@@ -1278,7 +1182,7 @@ async def complete_request(update: Update, context: CallbackContext, text: str =
         return ConversationHandler.END
     finally:
         context.user_data.clear()
-    
+
 def can_submit_request(user_id: int) -> bool:
     """Проверяет, может ли пользователь отправить новую заявку."""
     try:
@@ -1289,7 +1193,7 @@ def can_submit_request(user_id: int) -> bool:
                 WHERE user_id = ? AND created_at > datetime('now', '-1 hour')
             """, (user_id,))
             count = cur.fetchone()[0]
-            return count < 5  # Не более 5 заявок в час
+            return count < 5
     except sqlite3.Error as e:
         logger.error(f"Ошибка проверки лимита заявок: {e}")
         return True
@@ -1313,11 +1217,10 @@ async def unknown_message_fallback(update: Update, context: CallbackContext) -> 
         "Извините, я не понял вашу команду. Пожалуйста, используйте кнопки или команду /start.",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Вернуться в начало", callback_data="back_to_start")]])
     )
-    return ConversationHandler.END # Завершаем текущий диалог, чтобы пользователь мог начать заново
+    return ConversationHandler.END
 
 def setup_handlers(application: Application) -> None:
     """Настройка всех обработчиков команд."""
-    # Основной ConversationHandler
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler('start', start_command)],
         states={
@@ -1348,19 +1251,16 @@ def setup_handlers(application: Application) -> None:
     
     application.add_handler(conv_handler)
     
-    # Обработчик решений администратора
     application.add_handler(
         CallbackQueryHandler(handle_admin_decision, pattern=r"^(approve|reject|view)_\d+$"),
         group=2
     )
     
-    # Глобальная проверка на спам
     application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, check_spam),
         group=3
     )
 
-    
 async def show_date_keyboard(update: Update, text: str) -> None:
     """Показывает клавиатуру с вариантами дат."""
     keyboard = [
@@ -1383,11 +1283,22 @@ async def show_date_keyboard(update: Update, text: str) -> None:
             update,
             text,
             reply_markup=InlineKeyboardMarkup(keyboard))
+
 async def post_init(application: Application) -> None:
     """Действия после инициализации бота."""
     await send_bot_status(application.bot, "Бот запущен")
     BOT_STATE['running'] = True
     BOT_STATE['start_time'] = datetime.now(TIMEZONE)
+
+def get_uptime() -> str:
+    """Возвращает время работы бота в читаемом формате"""
+    if not BOT_STATE.get('start_time'):
+        return "N/A"
+    
+    uptime = datetime.now(TIMEZONE) - BOT_STATE['start_time']
+    hours, remainder = divmod(uptime.seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    return f"{uptime.days}d {hours}h {minutes}m {seconds}s"
 
 def main() -> None:
     """Запуск бота с обработкой ошибок"""
@@ -1410,63 +1321,45 @@ def main() -> None:
         # Настройка обработчиков
         setup_handlers(application)
 
-        # Запуск планировщика
-        global scheduler
-        scheduler = AsyncIOScheduler(timezone=TIMEZONE)
-        scheduler.add_job(
-            check_pending_applications,
-            'interval',
-            minutes=5,
-            args=[application]
-        )
-        # Добавлена проверка времени работы бота
-        scheduler.add_job(
-            check_shutdown_time,
-            'cron',
-            hour=23, # Проверка в 23:00 каждый день
-            minute=0,
-            args=[application]
-        )
-        scheduler.start()
-
-        # Регистрация cleanup при выходе
-        atexit.register(lambda: asyncio.run(cleanup()))
-
-        # Запуск бота
-        logger.info("Запуск бота...")
-        application.run_polling(
-            allowed_updates=Update.ALL_TYPES,
-            close_loop=False  # Важно для корректного завершения
-        )
+        # Настройка для Render
+        if WEBHOOK_URL:
+            application.run_webhook(
+                listen="0.0.0.0",
+                port=PORT,
+                url_path=TOKEN,
+                webhook_url=f"{WEBHOOK_URL}/{TOKEN}",
+                cert=None,
+                drop_pending_updates=True
+            )
+        else:
+            # Локальный запуск с polling
+            global scheduler
+            scheduler = AsyncIOScheduler(timezone=TIMEZONE)
+            scheduler.add_job(
+                check_pending_applications,
+                'interval',
+                minutes=5,
+                args=[application]
+            )
+            scheduler.add_job(
+                check_shutdown_time,
+                'cron',
+                hour=23,
+                minute=0,
+                args=[application]
+            )
+            scheduler.start()
+            atexit.register(lambda: asyncio.run(cleanup()))
+            
+            logger.info("Запуск бота в режиме polling...")
+            application.run_polling(
+                allowed_updates=Update.ALL_TYPES,
+                close_loop=False
+            )
 
     except Exception as e:
         logger.critical(f"Критическая ошибка при запуске: {e}", exc_info=True)
         sys.exit(1)
-def get_uptime() -> str:
-    """Возвращает время работы бота в читаемом формате"""
-    if not BOT_STATE.get('start_time'):
-        return "N/A"
-    
-    uptime = datetime.now(TIMEZONE) - BOT_STATE['start_time']
-    hours, remainder = divmod(uptime.seconds, 3600)
-    minutes, seconds = divmod(remainder, 60)
-    return f"{uptime.days}d {hours}h {minutes}m {seconds}s"
 
-def check_environment() -> bool:
-    """Проверка всех необходимых условий для работы"""
-    checks = {
-        "База данных": os.path.exists(DB_FILE),
-        "Файл запрещенных слов": os.path.exists(BAD_WORDS_FILE),
-        "Токен бота": bool(TOKEN),
-        "ID канала": bool(CHANNEL_ID),
-        "Часовой пояс": str(datetime.now(TIMEZONE))
-    }
-
-    for name, status in checks.items():
-        logger.info(f"{name}: {'OK' if status else 'ERROR'}")
-        if not status and name != "Файл запрещенных слов":
-            return False
-    return True
 if __name__ == "__main__":
     main()
-
