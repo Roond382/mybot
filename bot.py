@@ -134,38 +134,10 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 async def cleanup():
-    """Асинхронная функция очистки при завершении работы"""
-    if not BOT_STATE.get('running'):
-        return
-
+    """Упрощенная функция очистки"""
     logger.info("Завершение работы бота...")
-    BOT_STATE['running'] = False
-
-    try:
-        if ADMIN_CHAT_ID:
-            bot = Bot(token=TOKEN)
-            try:
-                await send_bot_status(bot, "Бот завершает работу", force_send=True)
-            except Exception as e:
-                logger.error(f"Ошибка отправки статуса завершения: {e}")
-            finally:
-                await bot.close()
-    except Exception as e:
-        logger.error(f"Ошибка при создании бота для отправки статуса: {e}")
-
     if 'scheduler' in globals():
-        try:
-            scheduler.shutdown(wait=False)
-            logger.info("Планировщик остановлен")
-        except Exception as e:
-            logger.error(f"Ошибка остановки планировщика: {e}")
-
-    if 'lock_socket' in globals():
-        try:
-            lock_socket.close()
-            logger.info("Сокет закрыт")
-        except Exception as e:
-            logger.error(f"Ошибка закрытия сокета: {e}")
+        scheduler.shutdown()
 
 def handle_signal(signum, frame):
     """Обработчик сигналов завершения работы"""
@@ -1308,57 +1280,29 @@ def main() -> None:
         if not check_environment():
             raise RuntimeError("Проверка окружения не пройдена")
 
-        # Настройка обработчиков сигналов
-        signal.signal(signal.SIGINT, handle_signal)
-        signal.signal(signal.SIGTERM, handle_signal)
-
-        # Создание приложения
-        application = Application.builder() \
-            .token(TOKEN) \
-            .post_init(post_init) \
-            .build()
-
-        # Отключаем JobQueue, так как он нам не нужен
-        application.job_queue = None
+        # Создание приложения без JobQueue
+        application = Application.builder().token(TOKEN).build()
+        application.job_queue = None  # Отключаем встроенный JobQueue
 
         # Настройка обработчиков
         setup_handlers(application)
 
-        # Настройка для Render
-        if WEBHOOK_URL:
-            application.run_webhook(
-                listen="0.0.0.0",
-                port=PORT,
-                url_path=TOKEN,
-                webhook_url=f"{WEBHOOK_URL}/{TOKEN}",
-                cert=None,
-                drop_pending_updates=True
-            )
-        else:
-            # Локальный запуск с polling
-            global scheduler
-            scheduler = AsyncIOScheduler(timezone=TIMEZONE)
-            scheduler.add_job(
-                check_pending_applications,
-                'interval',
-                minutes=5,
-                args=[application]
-            )
-            scheduler.add_job(
-                check_shutdown_time,
-                'cron',
-                hour=23,
-                minute=0,
-                args=[application]
-            )
-            scheduler.start()
-            atexit.register(lambda: asyncio.run(cleanup()))
-            
-            logger.info("Запуск бота в режиме polling...")
-            application.run_polling(
-                allowed_updates=Update.ALL_TYPES,
-                close_loop=False
-            )
+        # Наш собственный планировщик
+        scheduler = AsyncIOScheduler(timezone=TIMEZONE)
+        scheduler.add_job(
+            check_pending_applications,
+            'interval',
+            minutes=5,
+            args=[application]
+        )
+        scheduler.start()
+
+        # Запуск бота
+        logger.info("Запуск бота...")
+        application.run_polling(
+            allowed_updates=Update.ALL_TYPES,
+            close_loop=False
+        )
 
     except Exception as e:
         logger.critical(f"Критическая ошибка при запуске: {e}", exc_info=True)
