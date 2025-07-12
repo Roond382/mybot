@@ -18,7 +18,7 @@ from dotenv import load_dotenv
 import aiofiles
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-# Библиотека python-telegram-bot v21+
+# Библиотека python-telegram-bot v20+
 from telegram import (
     Bot,
     Update,
@@ -1281,9 +1281,8 @@ def main() -> None:
         if not check_environment():
             raise RuntimeError("Проверка окружения не пройдена")
 
-        # Создание приложения без JobQueue
+        # Создание приложения
         application = Application.builder().token(TOKEN).build()
-        application.job_queue = None  # Отключаем встроенный JobQueue
 
         # Настройка обработчиков
         setup_handlers(application)
@@ -1308,3 +1307,6 @@ def main() -> None:
     except Exception as e:
         logger.critical(f"Критическая ошибка при запуске: {e}", exc_info=True)
         sys.exit(1)
+
+if __name__ == '__main__':
+    main()
