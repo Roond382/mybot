@@ -39,7 +39,7 @@ import uvicorn
 load_dotenv()
 
 # ========== КОНФИГУРАЦИЯ ==========
-PORT = int(os.environ.get('PORT', 8443))
+PORT = int(os.environ.get('PORT', 10000))  # Render использует порт 10000
 WEBHOOK_URL = os.getenv('WEBHOOK_URL', '')
 TOKEN = os.getenv('TELEGRAM_TOKEN')
 CHANNEL_ID = int(os.getenv('CHANNEL_ID')) if os.getenv('CHANNEL_ID') else None
@@ -118,6 +118,7 @@ logger = logging.getLogger(__name__)
 
 # ========== ИНИЦИАЛИЗАЦИЯ FASTAPI ==========
 app = FastAPI()
+application = None  # Глобальная переменная для хранения экземпляра Application
 
 # ========== ГЛОБАЛЬНОЕ СОСТОЯНИЕ БОТА ==========
 BOT_STATE = {
@@ -1216,15 +1217,7 @@ def setup_handlers(application: Application) -> None:
 @app.on_event("startup")
 async def startup_event():
     """Запуск бота при старте FastAPI."""
-    asyncio.create_task(run_bot())
-
-@app.get("/")
-async def health_check():
-    """Проверка здоровья сервиса."""
-    return {"status": "ok", "bot_running": BOT_STATE['running']}
-
-async def run_bot():
-    """Основная функция запуска бота."""
+    global application
     application = Application.builder().token(TOKEN).build()
     setup_handlers(application)
     
@@ -1241,14 +1234,37 @@ async def run_bot():
         logger.info("Запуск в режиме вебхука...")
         await application.initialize()
         await application.start()
-        await application.bot.set_webhook(f"{WEBHOOK_URL}/{TOKEN}")
+        await application.bot.set_webhook(
+            url=f"{WEBHOOK_URL}/webhook",
+            allowed_updates=Update.ALL_TYPES
+        )
+        
+        BOT_STATE['running'] = True
+        BOT_STATE['start_time'] = datetime.now(TIMEZONE)
         
         # Бесконечный цикл для поддержания работы
         while True:
             await asyncio.sleep(3600)
     else:
         logger.info("Запуск в режиме polling...")
+        BOT_STATE['running'] = True
+        BOT_STATE['start_time'] = datetime.now(TIMEZONE)
         await application.run_polling()
+
+@app.post("/webhook")
+async def handle_webhook(update: dict):
+    """Обработчик вебхуков от Telegram."""
+    try:
+        await application.process_update(Update.de_json(update, application.bot))
+        return {"status": "ok"}
+    except Exception as e:
+        logger.error(f"Ошибка обработки вебхука: {e}")
+        return {"status": "error", "detail": str(e)}
+
+@app.get("/")
+async def health_check():
+    """Проверка здоровья сервиса."""
+    return {"status": "ok", "bot_running": BOT_STATE['running']}
 
 def main():
     """Точка входа для запуска сервера."""
