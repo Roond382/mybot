@@ -1318,6 +1318,9 @@ def main() -> None:
             .post_init(post_init) \
             .build()
 
+        # Отключаем JobQueue, так как он нам не нужен
+        application.job_queue = None
+
         # Настройка обработчиков
         setup_handlers(application)
 
@@ -1360,6 +1363,3 @@ def main() -> None:
     except Exception as e:
         logger.critical(f"Критическая ошибка при запуске: {e}", exc_info=True)
         sys.exit(1)
-
-if __name__ == "__main__":
-    main()
