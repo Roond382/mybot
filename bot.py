@@ -1241,15 +1241,11 @@ async def startup_event():
         
         BOT_STATE['running'] = True
         BOT_STATE['start_time'] = datetime.now(TIMEZONE)
-        
-        # Бесконечный цикл для поддержания работы
-        while True:
-            await asyncio.sleep(3600)
     else:
         logger.info("Запуск в режиме polling...")
         BOT_STATE['running'] = True
         BOT_STATE['start_time'] = datetime.now(TIMEZONE)
-        await application.run_polling()
+        asyncio.create_task(application.run_polling())
 
 @app.post("/webhook")
 async def handle_webhook(update: dict):
