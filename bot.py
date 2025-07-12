@@ -1,3 +1,4 @@
+import imghdr  ← эта строка должна быть первой
 import os
 import sys
 import logging
