@@ -346,7 +346,7 @@ async def send_bot_status(bot: Bot, status: str, force_send: bool = False) -> bo
         return False
 
 async def publish_to_channel(app_id: int, bot: Bot) -> bool:
-    """Публикует заявку в канал."""
+    """Публикует заявку в канал с красивым форматированием"""
     if not CHANNEL_ID:
         logger.error("CHANNEL_ID не задан. Публикация невозможна.")
         return False
@@ -356,10 +356,24 @@ async def publish_to_channel(app_id: int, bot: Bot) -> bool:
         logger.error(f"Заявка #{app_id} не найдена.")
         return False
 
+    # Форматируем сообщение
+    current_time = datetime.now(TIMEZONE).strftime("%H:%M")
+    
+    if app_details['type'] == 'congrat':
+        message_text = (
+            f"🎉 Поздравление от {app_details['from_name']}\n\n"
+            f"{app_details['from_name']} поздравляет {app_details['to_name']} "
+            f"с {app_details['text'].split('с ', 1)[1] if 'с ' in app_details['text'] else app_details['text']}\n\n"
+            f"#Николаевск\n"
+            f"⏳ Опубликовано: {current_time}"
+        )
+    else:
+        message_text = app_details['text']
+
     try:
         await bot.send_message(
             chat_id=CHANNEL_ID,
-            text=app_details['text']
+            text=message_text
         )
         mark_application_as_published(app_id)
         logger.info(f"Заявка #{app_id} опубликована в канале {CHANNEL_ID}")
