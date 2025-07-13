@@ -247,32 +247,36 @@ def mark_application_as_published(app_id: int) -> bool:
 async def check_subscription(bot: Bot, user_id: int) -> bool:
     """Проверяет, подписан ли пользователь на канал"""
     try:
-        member = await bot.get_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
+        member = await bot.get_chat_member(
+            chat_id=SUBSCRIPTION_CHANNEL_ID,  # Используем ID канала
+            user_id=user_id
+        )
         return member.status in ["member", "administrator", "creator"]
     except Exception as e:
         logger.error(f"Ошибка проверки подписки: {e}")
         return False
-async def handle_subscription_check(update: Update, context: CallbackContext) -> Optional[int]:
-    """Показывает меню или просьбу подписаться"""
+        
+async def handle_subscription_check(update: Update, context: CallbackContext):
     user = update.effective_user
     if not await check_subscription(context.bot, user.id):
+        # Создаем кнопку с правильной ссылкой
         subscribe_button = InlineKeyboardButton(
             "📢 Подписаться на канал", 
-            url=f"https://t.me/{CHANNEL_NAME.replace(' ', '')}"
+            url=f"https://t.me/c/2066197937"  # Ссылка для приватного канала
         )
         check_button = InlineKeyboardButton(
             "✅ Я подписался", 
             callback_data="check_subscription"
         )
+        
         keyboard = InlineKeyboardMarkup([[subscribe_button], [check_button]])
         
-        await safe_reply_text(
-            update,
+        await update.message.reply_text(
             "📌 Чтобы пользоваться ботом, подпишитесь на наш канал:",
             reply_markup=keyboard
         )
-        return None  # Не переводит в основное меню
-    return await start_command(update, context)  # Показывает меню
+        return None
+    return await start_command(update, context)
     
 async def load_bad_words() -> List[str]:
     """Загружает список запрещенных слов."""
@@ -1217,19 +1221,8 @@ async def unknown_message_fallback(update: Update, context: CallbackContext) -> 
 
 # ========== НАСТРОЙКА ОБРАБОТЧИКОВ ==========
 def setup_handlers(application: Application) -> None:
-    # ... (остальные обработчики остаются как есть)
-    
-    # Добавить этот код в конец функции:
-    application.add_handler(
-        CallbackQueryHandler(
-            handle_subscription_check, 
-            pattern="^check_subscription$"
-        ),
-        group=1
-    )
-    
-def setup_handlers(application: Application) -> None:
     """Настройка всех обработчиков команд."""
+    # Основной ConversationHandler
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler('start', start_command)],
         states={
@@ -1255,18 +1248,34 @@ def setup_handlers(application: Application) -> None:
         ],
         per_message=False
     )
-    
+
+    # Добавляем все обработчики с правильными группами
     application.add_handler(conv_handler)
+    
+    # Обработчик проверки подписки (группа 1)
     application.add_handler(
-        CallbackQueryHandler(handle_subscription_check, pattern="^check_subscription$"),
+        CallbackQueryHandler(
+            handle_subscription_check,
+            pattern="^check_subscription$"
+        ),
         group=1
     )
+    
+    # Обработчик решений администратора (группа 2)
     application.add_handler(
-        CallbackQueryHandler(handle_admin_decision, pattern=r"^(approve|reject|view)_\d+$"),
+        CallbackQueryHandler(
+            handle_admin_decision,
+            pattern=r"^(approve|reject|view)_\d+$"
+        ),
         group=2
     )
+    
+    # Обработчик проверки спама (группа 3)
     application.add_handler(
-        MessageHandler(filters.TEXT & ~filters.COMMAND, check_spam),
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            check_spam
+        ),
         group=3
     )
 
