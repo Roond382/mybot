@@ -1214,7 +1214,7 @@ def setup_handlers(application: Application) -> None:
     )
 
 # ========== ЗАПУСК СЕРВЕРА ==========
-@app.lifespan("startup")
+@app.on_event("startup")  # Верните старый вариант
 async def startup_event():
     """Запуск бота при старте FastAPI."""
     global application
@@ -1277,6 +1277,19 @@ def main():
         port=PORT,
         log_level="info"
     )
+@app.get("/")
+async def health_check():
+    return {"status": "ok", "bot_running": BOT_STATE.get('running', False)}
 
+@app.post("/webhook")
+async def handle_webhook(update: dict):
+    try:
+        if application:
+            await application.update_queue.put(Update.de_json(update, application.bot))
+            return {"status": "ok"}
+        return {"status": "error", "detail": "Application not initialized"}, 500
+    except Exception as e:
+        logger.error(f"Webhook error: {str(e)}")
+        return {"status": "error", "detail": str(e)}, 500
 if __name__ == "__main__":
     main()
