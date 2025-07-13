@@ -42,6 +42,7 @@ load_dotenv()
 PORT = int(os.environ.get('PORT', 10000))  # Render использует порт 10000
 WEBHOOK_URL = os.getenv('WEBHOOK_URL', '')
 TOKEN = os.getenv('TELEGRAM_TOKEN')
+WEBHOOK_SECRET = os.getenv('WEBHOOK_SECRET')
 CHANNEL_ID = int(os.getenv('CHANNEL_ID')) if os.getenv('CHANNEL_ID') else None
 ADMIN_CHAT_ID = int(os.getenv('ADMIN_CHAT_ID')) if os.getenv('ADMIN_CHAT_ID') else None
 TIMEZONE = pytz.timezone('Europe/Moscow')
@@ -1243,7 +1244,7 @@ def setup_handlers(application: Application) -> None:
     )
 
 # ========== ЗАПУСК СЕРВЕРА ==========
-@app.on_event("startup")  # Верните старый вариант
+@app.on_event("startup")
 async def startup_event():
     """Запуск бота при старте FastAPI."""
     global application
@@ -1265,7 +1266,8 @@ async def startup_event():
         await application.start()
         await application.bot.set_webhook(
             url=f"{WEBHOOK_URL}/webhook",
-            allowed_updates=Update.ALL_TYPES
+            allowed_updates=Update.ALL_TYPES,
+            secret_token=WEBHOOK_SECRET  # ← эта строка важна!
         )
         
         BOT_STATE['running'] = True
