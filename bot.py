@@ -1276,28 +1276,28 @@ async def startup_event():
         BOT_STATE['start_time'] = datetime.now(TIMEZONE)
         asyncio.create_task(application.run_polling())
 
+from fastapi import Request
+from fastapi.responses import JSONResponse
+
 @app.post("/webhook")
 async def handle_webhook(update: dict, request: Request):
     # Проверка секретного токена
     if request.headers.get("X-Telegram-Bot-Api-Secret-Token") != WEBHOOK_SECRET:
-        return {"status": "error", "detail": "Invalid token"}, 403
-    
+        return JSONResponse(content={"status": "error", "detail": "Invalid token"}, status_code=403)
+
     # Ограничение размера сообщения
     if len(str(update)) > 10_000:
-        return {"status": "error", "detail": "Payload too large"}, 413
-        
+        return JSONResponse(content={"status": "error", "detail": "Payload too large"}, status_code=413)
+
     try:
         if application:
             await application.update_queue.put(Update.de_json(update, application.bot))
             return {"status": "ok"}
-        return {"status": "error", "detail": "Application not initialized"}, 500
+        return JSONResponse(content={"status": "error", "detail": "Application not initialized"}, status_code=500)
     except Exception as e:
         logger.error(f"Webhook error: {str(e)}", extra={"update": update})
-        return {"status": "error", "detail": str(e)}, 500
-        
-@app.get("/webhook")
-async def webhook_check():
-    return {"status": "webhook_ready"}
+        return JSONResponse(content={"status": "error", "detail": str(e)}, status_code=500)
+       
 
 def main():
     """Точка входа для запуска сервера."""
@@ -1319,15 +1319,5 @@ def main():
 async def health_check():
     return {"status": "ok", "bot_running": BOT_STATE.get('running', False)}
 
-@app.post("/webhook")
-async def handle_webhook(update: dict):
-    try:
-        if application:
-            await application.update_queue.put(Update.de_json(update, application.bot))
-            return {"status": "ok"}
-        return {"status": "error", "detail": "Application not initialized"}, 500
-    except Exception as e:
-        logger.error(f"Webhook error: {str(e)}")
-        return {"status": "error", "detail": str(e)}, 500
 if __name__ == "__main__":
     main()
