@@ -1249,14 +1249,14 @@ async def startup_event():
 
 @app.post("/webhook")
 async def handle_webhook(update: dict):
-    """Обработчик вебхуков от Telegram."""
     try:
-        await application.process_update(Update.de_json(update, application.bot))
-        return {"status": "ok"}
+        if application:
+            await application.update_queue.put(Update.de_json(update, application.bot))
+            return {"status": "ok"}
+        return {"status": "error", "detail": "Application not initialized"}
     except Exception as e:
-        logger.error(f"Ошибка обработки вебхука: {e}")
-        return {"status": "error", "detail": str(e)}
-
+        logger.error(f"Webhook error: {str(e)}")
+        return {"status": "error", "detail": str(e)}, 500
 @app.get("/")
 async def health_check():
     """Проверка здоровья сервиса."""
