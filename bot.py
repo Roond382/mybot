@@ -244,6 +244,36 @@ def mark_application_as_published(app_id: int) -> bool:
         return False
 
 # ========== ФУНКЦИИ БОТА ==========
+async def check_subscription(bot: Bot, user_id: int) -> bool:
+    """Проверяет, подписан ли пользователь на канал"""
+    try:
+        member = await bot.get_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
+        return member.status in ["member", "administrator", "creator"]
+    except Exception as e:
+        logger.error(f"Ошибка проверки подписки: {e}")
+        return False
+async def handle_subscription_check(update: Update, context: CallbackContext) -> Optional[int]:
+    """Показывает меню или просьбу подписаться"""
+    user = update.effective_user
+    if not await check_subscription(context.bot, user.id):
+        subscribe_button = InlineKeyboardButton(
+            "📢 Подписаться на канал", 
+            url=f"https://t.me/{CHANNEL_NAME.replace(' ', '')}"
+        )
+        check_button = InlineKeyboardButton(
+            "✅ Я подписался", 
+            callback_data="check_subscription"
+        )
+        keyboard = InlineKeyboardMarkup([[subscribe_button], [check_button]])
+        
+        await safe_reply_text(
+            update,
+            "📌 Чтобы пользоваться ботом, подпишитесь на наш канал:",
+            reply_markup=keyboard
+        )
+        return None  # Не переводит в основное меню
+    return await start_command(update, context)  # Показывает меню
+    
 async def load_bad_words() -> List[str]:
     """Загружает список запрещенных слов."""
     try:
@@ -458,19 +488,8 @@ def get_uptime() -> str:
 
 # ========== ОБРАБОТЧИКИ КОМАНД ==========
 async def start_command(update: Update, context: CallbackContext) -> int:
-    """Обработчик команды /start."""
-    user = update.effective_user
-    logger.info(f"Пользователь @{user.username if user else 'N/A'} запустил бота")
-    context.user_data.clear()
-
-    text = "Выберите тип заявки:"
-    keyboard = []
-    for key, info in REQUEST_TYPES.items():
-        keyboard.append([InlineKeyboardButton(f"{info['icon']} {info['name']}", callback_data=key)])
-    keyboard += BACK_BUTTON
-
-    await safe_reply_text(update, text, reply_markup=InlineKeyboardMarkup(keyboard))
-    return TYPE_SELECTION
+    """Новая версия с проверкой подписки"""
+    return await handle_subscription_check(update, context)
 
 async def handle_type_selection(update: Update, context: CallbackContext) -> int:
     """Обрабатывает выбор типа заявки."""
@@ -570,16 +589,9 @@ async def get_recipient_name(update: Update, context: CallbackContext) -> int:
     return CONGRAT_HOLIDAY_CHOICE
 
 async def back_to_start(update: Update, context: CallbackContext) -> int:
-    """Возврат в главное меню."""
+    """Возврат в начало с проверкой подписки"""
     context.user_data.clear()
-    user = update.effective_user
-    logger.info(f"Пользователь @{user.username if user else 'N/A'} вернулся в начало")
-    if update.callback_query:
-        try:
-            await update.callback_query.answer()
-        except TelegramError as e:
-            logger.warning(f"Ошибка при ответе на callback в back_to_start: {e}")
-    return await start_command(update, context)
+    return await handle_subscription_check(update, context)
 
 async def cancel_command(update: Update, context: CallbackContext) -> int:
     """Обработчик команды /cancel."""
@@ -1205,6 +1217,18 @@ async def unknown_message_fallback(update: Update, context: CallbackContext) -> 
 
 # ========== НАСТРОЙКА ОБРАБОТЧИКОВ ==========
 def setup_handlers(application: Application) -> None:
+    # ... (остальные обработчики остаются как есть)
+    
+    # Добавить этот код в конец функции:
+    application.add_handler(
+        CallbackQueryHandler(
+            handle_subscription_check, 
+            pattern="^check_subscription$"
+        ),
+        group=1
+    )
+    
+def setup_handlers(application: Application) -> None:
     """Настройка всех обработчиков команд."""
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler('start', start_command)],
@@ -1233,6 +1257,10 @@ def setup_handlers(application: Application) -> None:
     )
     
     application.add_handler(conv_handler)
+    application.add_handler(
+        CallbackQueryHandler(handle_subscription_check, pattern="^check_subscription$"),
+        group=1
+    )
     application.add_handler(
         CallbackQueryHandler(handle_admin_decision, pattern=r"^(approve|reject|view)_\d+$"),
         group=2
@@ -1282,7 +1310,7 @@ async def handle_webhook(update: dict):
         if application:
             await application.update_queue.put(Update.de_json(update, application.bot))
             return {"status": "ok"}
-        return {"status": "error", "detail": "Application not initialized"}
+        return {"status": "error", "detail": "Application not initialized"}, 500
     except Exception as e:
         logger.error(f"Webhook error: {str(e)}")
         return {"status": "error", "detail": str(e)}, 500
