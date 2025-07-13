@@ -1277,15 +1277,24 @@ async def startup_event():
         asyncio.create_task(application.run_polling())
 
 @app.post("/webhook")
-async def handle_webhook(update: dict):
+async def handle_webhook(update: dict, request: Request):
+    # Проверка секретного токена
+    if request.headers.get("X-Telegram-Bot-Api-Secret-Token") != WEBHOOK_SECRET:
+        return {"status": "error", "detail": "Invalid token"}, 403
+    
+    # Ограничение размера сообщения
+    if len(str(update)) > 10_000:
+        return {"status": "error", "detail": "Payload too large"}, 413
+        
     try:
         if application:
             await application.update_queue.put(Update.de_json(update, application.bot))
             return {"status": "ok"}
-        return {"status": "error", "detail": "Application not initialized"}
+        return {"status": "error", "detail": "Application not initialized"}, 500
     except Exception as e:
-        logger.error(f"Webhook error: {str(e)}")
+        logger.error(f"Webhook error: {str(e)}", extra={"update": update})
         return {"status": "error", "detail": str(e)}, 500
+        
 @app.get("/webhook")
 async def webhook_check():
     return {"status": "webhook_ready"}
