@@ -364,13 +364,17 @@ async def publish_to_channel(app_id: int, bot: Bot) -> bool:
         from_name = app_details['from_name'].strip().title() if 'from_name' in app_details.keys() else ''
         to_name = app_details['to_name'].strip().title() if 'to_name' in app_details.keys() else ''
         
-        # Чистим и украшаем текст
+        # Чистим и украшаем текст (удаляем дублирующую строку)
         clean_text = app_details['text']
-        clean_text = re.sub(rf"{re.escape(from_name)} поздравляет {re.escape(to_name)}[:]*", "", clean_text)
-        clean_text = re.sub(r"^[Пп]оздравляю[!]*", "", clean_text)
-        clean_text = re.sub(r"^с\s+", "", clean_text)
-        clean_text = clean_text.strip('»«!?.').strip()
-        
+        try:
+            pattern = rf"{re.escape(from_name.lower())} поздравляет {re.escape(to_name.lower())}[:]*"
+            clean_text = re.sub(pattern, "", clean_text.lower(), flags=re.IGNORECASE)
+            clean_text = re.sub(r"^[Пп]оздравляю[!]*", "", clean_text)
+            clean_text = re.sub(r"^с\s+", "", clean_text)
+            clean_text = clean_text.strip('»«!?.').strip()
+        except Exception as e:
+            logger.error(f"Ошибка при очистке текста поздравления: {e}", exc_info=True)
+
         # Яркое оформление с эмодзи
         message_text = (
             f"🎊🎉 ПОЗДРАВЛЯЕМ! 🎉🎊\n\n"
@@ -398,6 +402,7 @@ async def publish_to_channel(app_id: int, bot: Bot) -> bool:
     except Exception as e:
         logger.error(f"Ошибка публикации: {str(e)}")
         return False
+
 async def check_pending_applications(context: CallbackContext) -> None:
     """Проверяет и публикует одобренные заявки."""
     applications = get_approved_unpublished_applications()
