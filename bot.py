@@ -346,7 +346,7 @@ async def send_bot_status(bot: Bot, status: str, force_send: bool = False) -> bo
         return False
 
 async def publish_to_channel(app_id: int, bot: Bot) -> bool:
-    """Публикует заявку в канал с красивым форматированием"""
+    """Публикует заявку в канал с профессиональным форматированием"""
     if not CHANNEL_ID:
         logger.error("CHANNEL_ID не задан. Публикация невозможна.")
         return False
@@ -356,32 +356,63 @@ async def publish_to_channel(app_id: int, bot: Bot) -> bool:
         logger.error(f"Заявка #{app_id} не найдена.")
         return False
 
-    # Форматируем сообщение
+    # Получаем текущее время для подписи
     current_time = datetime.now(TIMEZONE).strftime("%H:%M")
     
+    # Определяем хештеги по типу сообщения
+    HASHTAGS = {
+        'congrat': '#НебольшойМирНиколаевск #Поздравления',
+        'announcement': '#НебольшойМирНиколаевск #Объявления', 
+        'news': '#НебольшойМирНиколаевск #Новости'
+    }
+
+    # Обрабатываем текст в зависимости от типа сообщения
     if app_details['type'] == 'congrat':
+        # Очищаем текст от дублирующихся фраз
+        clean_text = app_details['text']
+        if app_details.get('from_name') and app_details.get('to_name'):
+            patterns_to_remove = [
+                f"{app_details['from_name']} поздравляет {app_details['to_name']}",
+                "поздравляет",
+                "с ",
+                "Поздравляю"
+            ]
+            
+            for pattern in patterns_to_remove:
+                clean_text = clean_text.replace(pattern, "", 1).strip()
+        
+        # Форматируем сообщение
         message_text = (
-            f"🎉 Поздравление от {app_details['from_name']}\n\n"
-            f"{app_details['from_name']} поздравляет {app_details['to_name']} "
-            f"с {app_details['text'].split('с ', 1)[1] if 'с ' in app_details['text'] else app_details['text']}\n\n"
-            f"#Николаевск\n"
+            f"🎉 Поздравление от {app_details.get('from_name', '')}\n\n"
+            f"{app_details.get('from_name', '')} поздравляет {app_details.get('to_name', '')}:\n"
+            f"«{clean_text}»\n\n"
+            f"{HASHTAGS['congrat']}\n"
             f"⏳ Опубликовано: {current_time}"
         )
     else:
-        message_text = app_details['text']
+        # Для других типов сообщений (новости/объявления)
+        message_text = (
+            f"{app_details['text']}\n\n"
+            f"{HASHTAGS.get(app_details['type'], '')}\n"
+            f"⏳ Опубликовано: {current_time}"
+        )
 
     try:
+        # Отправляем форматированное сообщение
         await bot.send_message(
             chat_id=CHANNEL_ID,
-            text=message_text
+            text=message_text,
+            disable_web_page_preview=True
         )
+        
+        # Помечаем как опубликованное
         mark_application_as_published(app_id)
         logger.info(f"Заявка #{app_id} опубликована в канале {CHANNEL_ID}")
         return True
+        
     except Exception as e:
         logger.error(f"Ошибка публикации заявки #{app_id}: {str(e)}")
         return False
-
 async def check_pending_applications(context: CallbackContext) -> None:
     """Проверяет и публикует одобренные заявки."""
     applications = get_approved_unpublished_applications()
