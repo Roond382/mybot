@@ -1214,7 +1214,7 @@ def setup_handlers(application: Application) -> None:
     )
 
 # ========== ЗАПУСК СЕРВЕРА ==========
-@app.on_event("startup")
+@app.lifespan("startup")
 async def startup_event():
     """Запуск бота при старте FastAPI."""
     global application
