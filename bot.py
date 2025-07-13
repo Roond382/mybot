@@ -1257,10 +1257,9 @@ async def handle_webhook(update: dict):
     except Exception as e:
         logger.error(f"Webhook error: {str(e)}")
         return {"status": "error", "detail": str(e)}, 500
-@app.get("/")
-async def health_check():
-    """Проверка здоровья сервиса."""
-    return {"status": "ok", "bot_running": BOT_STATE['running']}
+@app.get("/webhook")
+async def webhook_check():
+    return {"status": "webhook_ready"}
 
 def main():
     """Точка входа для запуска сервера."""
