@@ -368,23 +368,28 @@ async def publish_to_channel(app_id: int, bot: Bot) -> bool:
 
     # Обрабатываем текст в зависимости от типа сообщения
     if app_details['type'] == 'congrat':
+        # Получаем данные из строки БД
+        from_name = app_details['from_name'] if 'from_name' in app_details.keys() else ''
+        to_name = app_details['to_name'] if 'to_name' in app_details.keys() else ''
+        
         # Очищаем текст от дублирующихся фраз
         clean_text = app_details['text']
-        if app_details.get('from_name') and app_details.get('to_name'):
+        if from_name and to_name:
             patterns_to_remove = [
-                f"{app_details['from_name']} поздравляет {app_details['to_name']}",
+                f"{from_name} поздравляет {to_name}",
                 "поздравляет",
                 "с ",
                 "Поздравляю"
             ]
             
             for pattern in patterns_to_remove:
-                clean_text = clean_text.replace(pattern, "", 1).strip()
+                if pattern in clean_text:
+                    clean_text = clean_text.replace(pattern, "", 1).strip()
         
         # Форматируем сообщение
         message_text = (
-            f"🎉 Поздравление от {app_details.get('from_name', '')}\n\n"
-            f"{app_details.get('from_name', '')} поздравляет {app_details.get('to_name', '')}:\n"
+            f"🎉 Поздравление от {from_name}\n\n"
+            f"{from_name} поздравляет {to_name}:\n"
             f"«{clean_text}»\n\n"
             f"{HASHTAGS['congrat']}\n"
             f"⏳ Опубликовано: {current_time}"
