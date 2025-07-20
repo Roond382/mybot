@@ -164,7 +164,6 @@ def init_db():
     except sqlite3.Error as e:
         logger.error(f"Ошибка инициализации БД: {e}", exc_info=True)
         raise
-
 def add_application(data: Dict[str, Any]) -> Optional[int]:
     """Добавляет новую заявку в базу данных."""
     try:
@@ -244,7 +243,6 @@ def mark_application_as_published(app_id: int) -> bool:
         logger.error(f"Ошибка публикации заявки #{app_id}: {e}", exc_info=True)
         return False
 
-# ========== ФУНКЦИИ БОТА ==========
 async def load_bad_words() -> List[str]:
     """Загружает список запрещенных слов."""
     try:
@@ -360,11 +358,9 @@ async def publish_to_channel(app_id: int, bot: Bot) -> bool:
     current_time = datetime.now(TIMEZONE).strftime("%H:%M")
     
     if app_details['type'] == 'congrat':
-        # Получаем и форматируем имена
         from_name = app_details['from_name'].strip().title() if 'from_name' in app_details.keys() else ''
         to_name = app_details['to_name'].strip().title() if 'to_name' in app_details.keys() else ''
         
-        # Чистим и украшаем текст (удаляем дублирующую строку)
         clean_text = app_details['text']
         try:
             pattern = rf"{re.escape(from_name.lower())} поздравляет {re.escape(to_name.lower())}[:]*"
@@ -375,7 +371,6 @@ async def publish_to_channel(app_id: int, bot: Bot) -> bool:
         except Exception as e:
             logger.error(f"Ошибка при очистке текста поздравления: {e}", exc_info=True)
 
-        # Яркое оформление с эмодзи
         message_text = (
             f"🎊🎉 ПОЗДРАВЛЯЕМ! 🎉🎊\n\n"
             f"✨ {from_name} поздравляет {to_name}:\n"
@@ -462,7 +457,80 @@ def get_uptime() -> str:
     minutes, seconds = divmod(remainder, 60)
     return f"{uptime.days}d {hours}h {minutes}m {seconds}s"
 
-# ========== ОБРАБОТЧИКИ КОМАНД ==========
+def validate_name(name: str) -> bool:
+    """Проверяет валидность имени."""
+    if len(name) < 2 or len(name) > MAX_NAME_LENGTH:
+        return False
+    return bool(re.match(r'^[a-zA-Zа-яА-ЯёЁ\s\-]+$', name))
+
+def is_holiday_active(holiday_date_str: str) -> bool:
+    """Проверяет, актуален ли праздник в текущий период."""
+    current_year = datetime.now().year
+    holiday_date = datetime.strptime(f"{current_year}-{holiday_date_str}", "%Y-%m-%d").date()
+    today = datetime.now().date()
+    return (holiday_date - timedelta(days=5)) <= today <= (holiday_date + timedelta(days=5))
+
+async def notify_admin_new_application(bot: Bot, app_id: int, app_details: dict) -> None:
+    """Уведомляет администратора о новой заявке."""
+    if not ADMIN_CHAT_ID:
+        return
+
+    app_type = REQUEST_TYPES.get(app_details['type'], {}).get('name', app_details['type'])
+    text = (
+        f"📨 Новая заявка #{app_id}\n"
+        f"• Тип: {app_type}\n"
+        f"• От: @{app_details['username'] or 'N/A'} (ID: {app_details['user_id']})\n"
+        f"• Текст: {app_details['text'][:200]}...\n\n"
+        "Выберите действие:"
+    )
+
+    keyboard = [
+        [
+            InlineKeyboardButton("✅ Одобрить", callback_data=f"approve_{app_id}"),
+            InlineKeyboardButton("❌ Отклонить", callback_data=f"reject_{app_id}")
+        ],
+        [InlineKeyboardButton("👀 Посмотреть полностью", callback_data=f"view_{app_id}")]
+    ]
+
+    await safe_send_message(
+        bot,
+        ADMIN_CHAT_ID,
+        text,
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+async def notify_user_about_decision(bot: Bot, app_details: dict, approved: bool) -> None:
+    """Уведомляет пользователя о решении по его заявке."""
+    user_id = app_details['user_id']
+    app_type = REQUEST_TYPES.get(app_details['type'], {}).get('name', app_details['type'])
+    
+    if approved:
+        text = (
+            f"🎉 Ваша заявка на {app_type} одобрена!\n"
+            f"Она будет опубликована в канале {CHANNEL_NAME}."
+        )
+    else:
+        text = (
+            f"😕 Ваша заявка на {app_type} отклонена модератором.\n"
+            f"Причина: нарушение правил канала."
+        )
+
+    await safe_send_message(bot, user_id, text)
+
+def can_submit_request(user_id: int) -> bool:
+    """Проверяет, может ли пользователь отправить новую заявку."""
+    try:
+        with get_db_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT COUNT(*) FROM applications
+                WHERE user_id = ? AND created_at > datetime('now', '-1 hour')
+            """, (user_id,))
+            count = cur.fetchone()[0]
+            return count < 5
+    except sqlite3.Error as e:
+        logger.error(f"Ошибка проверки лимита заявок: {e}")
+        return True
 async def start_command(update: Update, context: CallbackContext) -> int:
     """Обработчик команды /start."""
     user = update.effective_user
@@ -539,12 +607,6 @@ async def get_sender_name(update: Update, context: CallbackContext) -> int:
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Вернуться в начало", callback_data="back_to_start")]]))
     return RECIPIENT_NAME_INPUT
 
-def validate_name(name: str) -> bool:
-    """Проверяет валидность имени."""
-    if len(name) < 2 or len(name) > MAX_NAME_LENGTH:
-        return False
-    return bool(re.match(r'^[a-zA-Zа-яА-ЯёЁ\s\-]+$', name))
-
 async def get_recipient_name(update: Update, context: CallbackContext) -> int:
     """Получает имя получателя."""
     if not update.message or not update.message.text or not update.message.text.strip():
@@ -602,13 +664,6 @@ async def cancel_command(update: Update, context: CallbackContext) -> int:
     
     context.user_data.clear()
     return await back_to_start(update, context)
-
-def is_holiday_active(holiday_date_str: str) -> bool:
-    """Проверяет, актуален ли праздник в текущий период."""
-    current_year = datetime.now().year
-    holiday_date = datetime.strptime(f"{current_year}-{holiday_date_str}", "%Y-%m-%d").date()
-    today = datetime.now().date()
-    return (holiday_date - timedelta(days=5)) <= today <= (holiday_date + timedelta(days=5))
 
 async def handle_congrat_holiday_choice(update: Update, context: CallbackContext) -> int:
     """Обрабатывает выбор праздника."""
@@ -1010,35 +1065,6 @@ async def back_to_custom_message(update: Update, context: CallbackContext) -> in
         ]))
     return CUSTOM_CONGRAT_MESSAGE_INPUT
 
-async def notify_admin_new_application(bot: Bot, app_id: int, app_details: dict) -> None:
-    """Уведомляет администратора о новой заявке."""
-    if not ADMIN_CHAT_ID:
-        return
-
-    app_type = REQUEST_TYPES.get(app_details['type'], {}).get('name', app_details['type'])
-    text = (
-        f"📨 Новая заявка #{app_id}\n"
-        f"• Тип: {app_type}\n"
-        f"• От: @{app_details['username'] or 'N/A'} (ID: {app_details['user_id']})\n"
-        f"• Текст: {app_details['text'][:200]}...\n\n"
-        "Выберите действие:"
-    )
-
-    keyboard = [
-        [
-            InlineKeyboardButton("✅ Одобрить", callback_data=f"approve_{app_id}"),
-            InlineKeyboardButton("❌ Отклонить", callback_data=f"reject_{app_id}")
-        ],
-        [InlineKeyboardButton("👀 Посмотреть полностью", callback_data=f"view_{app_id}")]
-    ]
-
-    await safe_send_message(
-        bot,
-        ADMIN_CHAT_ID,
-        text,
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-
 async def handle_admin_decision(update: Update, context: CallbackContext) -> None:
     """Обрабатывает решение администратора по заявке."""
     query = update.callback_query
@@ -1092,24 +1118,6 @@ async def handle_admin_decision(update: Update, context: CallbackContext) -> Non
             full_text,
             reply_to_message_id=query.message.message_id
         )
-
-async def notify_user_about_decision(bot: Bot, app_details: dict, approved: bool) -> None:
-    """Уведомляет пользователя о решении по его заявке."""
-    user_id = app_details['user_id']
-    app_type = REQUEST_TYPES.get(app_details['type'], {}).get('name', app_details['type'])
-    
-    if approved:
-        text = (
-            f"🎉 Ваша заявка на {app_type} одобрена!\n"
-            f"Она будет опубликована в канале {CHANNEL_NAME}."
-        )
-    else:
-        text = (
-            f"😕 Ваша заявка на {app_type} отклонена модератором.\n"
-            f"Причина: нарушение правил канала."
-        )
-
-    await safe_send_message(bot, user_id, text)
 
 async def complete_request(update: Update, context: CallbackContext, text: str = None) -> int:
     """Завершает создание заявки и отправляет на модерацию"""
@@ -1173,21 +1181,6 @@ async def complete_request(update: Update, context: CallbackContext, text: str =
     finally:
         context.user_data.clear()
 
-def can_submit_request(user_id: int) -> bool:
-    """Проверяет, может ли пользователь отправить новую заявку."""
-    try:
-        with get_db_connection() as conn:
-            cur = conn.cursor()
-            cur.execute("""
-                SELECT COUNT(*) FROM applications
-                WHERE user_id = ? AND created_at > datetime('now', '-1 hour')
-            """, (user_id,))
-            count = cur.fetchone()[0]
-            return count < 5
-    except sqlite3.Error as e:
-        logger.error(f"Ошибка проверки лимита заявок: {e}")
-        return True
-
 async def check_spam(update: Update, context: CallbackContext) -> bool:
     """Проверяет пользователя на спам."""
     user = update.effective_user
@@ -1209,7 +1202,6 @@ async def unknown_message_fallback(update: Update, context: CallbackContext) -> 
     )
     return ConversationHandler.END
 
-# ========== НАСТРОЙКА ОБРАБОТЧИКОВ ==========
 def setup_handlers(application: Application) -> None:
     """Настройка всех обработчиков команд."""
     conv_handler = ConversationHandler(
@@ -1248,7 +1240,6 @@ def setup_handlers(application: Application) -> None:
         group=3
     )
 
-# ========== ЗАПУСК СЕРВЕРА ==========
 @app.on_event("startup")
 async def startup_event():
     """Запуск бота при старте FastAPI."""
@@ -1272,7 +1263,7 @@ async def startup_event():
         await application.bot.set_webhook(
             url=f"{WEBHOOK_URL}/webhook",
             allowed_updates=Update.ALL_TYPES,
-            secret_token=WEBHOOK_SECRET  # ← эта строка важна!
+            secret_token=WEBHOOK_SECRET
         )
         
         BOT_STATE['running'] = True
@@ -1322,6 +1313,7 @@ def main():
         port=PORT,
         log_level="info"
     )
+
 @app.get("/")
 async def health_check():
     return {"status": "ok", "bot_running": BOT_STATE.get('running', False)}
