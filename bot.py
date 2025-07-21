@@ -4,6 +4,7 @@ import logging
 import sqlite3
 import re
 import asyncio
+import secrets
 from datetime import datetime, timedelta
 from typing import Dict, Any, Optional, Tuple, List
 from fastapi import Request
@@ -1479,39 +1480,22 @@ async def startup_event():
         
 @app.post("/webhook")
 async def webhook_handler(request: Request):
-    """Обработчик вебхука от Telegram с улучшенной безопасностью и логированием."""
+    """Обработчик вебхука от Telegram с улучшенной безопасностью."""
     try:
-        # Логирование входящего запроса для отладки
         client_ip = request.client.host if request.client else "unknown"
         logger.info(f"Входящий вебхук от IP: {client_ip}")
 
-        # Проверка секретного токена
+        # Проверка секретного токена (если он задан)
         if WEBHOOK_SECRET:
             token = request.headers.get("X-Telegram-Bot-Api-Secret-Token")
             if not token:
                 logger.warning("Отсутствует секретный токен в заголовках")
                 raise HTTPException(status_code=403, detail="Secret token required")
             
+            # Безопасное сравнение токенов
             if not secrets.compare_digest(token, WEBHOOK_SECRET):
                 logger.warning("Неверный секретный токен")
                 raise HTTPException(status_code=403, detail="Invalid token")
-
-        # Проверка типа содержимого
-        content_type = request.headers.get("content-type")
-        if content_type != "application/json":
-            logger.warning(f"Неподдерживаемый Content-Type: {content_type}")
-            raise HTTPException(status_code=400, detail="Expected application/json")
-
-        # Получение данных с проверкой размера
-        try:
-            update_data = await request.json()
-        except ValueError as e:
-            logger.warning(f"Ошибка парсинга JSON: {str(e)}")
-            raise HTTPException(status_code=400, detail="Invalid JSON")
-
-        if not update_data:
-            logger.warning("Пустое тело запроса")
-            raise HTTPException(status_code=400, detail="Empty request body")
 
         # Проверка инициализации приложения
         if not application or not application.update_queue:
@@ -1519,19 +1503,16 @@ async def webhook_handler(request: Request):
             raise HTTPException(status_code=503, detail="Bot not initialized")
 
         # Обработка обновления
+        update_data = await request.json()
         update = Update.de_json(update_data, application.bot)
-        if not update:
-            logger.warning("Не удалось распарсить обновление")
-            raise HTTPException(status_code=400, detail="Invalid update")
-
         await application.update_queue.put(update)
-        logger.info("Обновление успешно обработано")
+        
         return {"status": "ok"}
 
     except HTTPException:
-        raise  # Пробрасываем уже обработанные HTTP исключения
+        raise
     except Exception as e:
-        logger.error(f"Критическая ошибка вебхука: {str(e)}", exc_info=True)
+        logger.error(f"Ошибка обработки вебхука: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal server error")
         
 def main():
