@@ -391,7 +391,7 @@ async def publish_to_channel(app_id: int, bot: Bot) -> bool:
 
     current_time = datetime.now(TIMEZONE).strftime("%H:%M")
     
-    # Используйте доступ к полям через индексацию вместо .get()
+    # Используйте доступ к полям через индексацию
     text = app_details['text']
     photo_id = app_details['photo_id'] if 'photo_id' in app_details else None
     
@@ -429,8 +429,8 @@ async def check_pending_applications(context: CallbackContext) -> None:
         applications = get_approved_unpublished_applications()
         for app in applications:
             try:
-                if app['type'] == 'congrat' and app['congrat_type'] == 'custom':
-                    if app['publish_date']:
+                if app['type'] == 'congrat' and app.get('congrat_type') == 'custom':
+                    if app.get('publish_date'):
                         publish_date_obj = datetime.strptime(app['publish_date'], "%Y-%m-%d").date()
                         today = datetime.now().date()
                         if publish_date_obj <= today:
@@ -503,7 +503,7 @@ async def notify_admin_new_application(bot: Bot, app_id: int, app_details: dict)
         return
 
     app_type = REQUEST_TYPES.get(app_details['type'], {}).get('name', app_details['type'])
-    has_photo = "✅" if app_details.get('photo_id') else "❌"
+    has_photo = "✅" if 'photo_id' in app_details and app_details['photo_id'] else "❌"
     
     text = (
         f"📨 Новая заявка #{app_id}\n"
