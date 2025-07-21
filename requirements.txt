@@ -1,9 +1,9 @@
 python-telegram-bot==20.8
 fastapi==0.95.2
 uvicorn==0.22.0
-pytz==2023.3
 python-dotenv==1.0.0
 apscheduler==3.10.1
 aiofiles==23.2.1
+pytz==2023.3
 Pillow==10.3.0
 httpx==0.26.0
