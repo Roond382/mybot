@@ -129,6 +129,20 @@ BOT_STATE = {
 }
 
 # ========== БАЗА ДАННЫХ ==========
+def cleanup_old_applications(days: int = 30) -> None:
+    """Очищает старые заявки старше указанного количества дней."""
+    try:
+        with get_db_connection() as conn:
+            conn.execute("""
+                DELETE FROM applications 
+                WHERE created_at < datetime('now', ?) 
+                AND status IN ('published', 'rejected')
+            """, (f"-{days} days",))
+            conn.commit()
+            logger.info(f"Очистка БД: удалены заявки старше {days} дней")
+    except sqlite3.Error as e:
+        logger.error(f"Ошибка очистки БД: {e}", exc_info=True)
+
 def get_db_connection() -> sqlite3.Connection:
     """Устанавливает соединение с базой данных."""
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
@@ -149,6 +163,7 @@ def init_db():
                 from_name TEXT,
                 to_name TEXT,
                 text TEXT NOT NULL,
+                photo_id TEXT,  # Добавлено для хранения ID фото
                 status TEXT DEFAULT 'pending',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 publish_date DATE,
@@ -170,25 +185,29 @@ def add_application(data: Dict[str, Any]) -> Optional[int]:
         with get_db_connection() as conn:
             cur = conn.cursor()
             cur.execute("""
-            INSERT INTO applications
-            (user_id, username, type, subtype, from_name, to_name, text, publish_date, congrat_type)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                data['user_id'],
-                data.get('username'),
-                data['type'],
-                data.get('subtype'),
-                data.get('from_name'),
-                data.get('to_name'),
-                data['text'],
-                data.get('publish_date'),
-                data.get('congrat_type')
-            ))
+                INSERT INTO applications
+                (user_id, username, type, subtype, from_name, to_name, text, photo_id, publish_date, congrat_type)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    data['user_id'],
+                    data.get('username'),
+                    data['type'],
+                    data.get('subtype'),
+                    data.get('from_name'),
+                    data.get('to_name'),
+                    data['text'],
+                    data.get('photo_id'),
+                    data.get('publish_date'),
+                    data.get('congrat_type')
+                ))
             app_id = cur.lastrowid
             conn.commit()
             return app_id
     except sqlite3.Error as e:
         logger.error(f"Ошибка добавления заявки: {e}\nДанные: {data}", exc_info=True)
+        return None
+    except Exception as e:
+        logger.error(f"Неожиданная ошибка при добавлении заявки: {e}", exc_info=True)
         return None
 
 def get_application_details(app_id: int) -> Optional[sqlite3.Row]:
@@ -345,7 +364,7 @@ async def send_bot_status(bot: Bot, status: str, force_send: bool = False) -> bo
         return False
 
 async def publish_to_channel(app_id: int, bot: Bot) -> bool:
-    """Публикует заявку в канал с выразительным оформлением"""
+    """Публикует заявку в канал с фото или без"""
     if not CHANNEL_ID:
         logger.error("CHANNEL_ID не задан. Публикация невозможна.")
         return False
@@ -358,24 +377,9 @@ async def publish_to_channel(app_id: int, bot: Bot) -> bool:
     current_time = datetime.now(TIMEZONE).strftime("%H:%M")
     
     if app_details['type'] == 'congrat':
-        from_name = app_details['from_name'].strip().title() if 'from_name' in app_details.keys() else ''
-        to_name = app_details['to_name'].strip().title() if 'to_name' in app_details.keys() else ''
-        
-        clean_text = app_details['text']
-        try:
-            pattern = rf"{re.escape(from_name.lower())} поздравляет {re.escape(to_name.lower())}[:]*"
-            clean_text = re.sub(pattern, "", clean_text.lower(), flags=re.IGNORECASE)
-            clean_text = re.sub(r"^[Пп]оздравляю[!]*", "", clean_text)
-            clean_text = re.sub(r"^с\s+", "", clean_text)
-            clean_text = clean_text.strip('»«!?.').strip()
-        except Exception as e:
-            logger.error(f"Ошибка при очистке текста поздравления: {e}", exc_info=True)
-
         message_text = (
-            f"🎊🎉 ПОЗДРАВЛЯЕМ! 🎉🎊\n\n"
-            f"✨ {from_name} поздравляет {to_name}:\n"
-            f"▫️ {clean_text}\n\n"
-            f"#НебольшойМирНиколаевск #Поздравления\n"
+            f"{app_details['text']}\n\n"
+            f"#НебольшойМирНиколаевск\n"
             f"🕒 {current_time}"
         )
     else:
@@ -386,13 +390,22 @@ async def publish_to_channel(app_id: int, bot: Bot) -> bool:
         )
 
     try:
-        await bot.send_message(
-            chat_id=CHANNEL_ID,
-            text=message_text,
-            disable_web_page_preview=True
-        )
+        if app_details.get('photo_id'):
+            await bot.send_photo(
+                chat_id=CHANNEL_ID,
+                photo=app_details['photo_id'],
+                caption=message_text,
+                disable_notification=True
+            )
+        else:
+            await bot.send_message(
+                chat_id=CHANNEL_ID,
+                text=message_text,
+                disable_web_page_preview=True
+            )
+            
         mark_application_as_published(app_id)
-        logger.info(f"Опубликовано поздравление #{app_id}")
+        logger.info(f"Опубликовано сообщение #{app_id}")
         return True
     except Exception as e:
         logger.error(f"Ошибка публикации: {str(e)}")
@@ -476,9 +489,12 @@ async def notify_admin_new_application(bot: Bot, app_id: int, app_details: dict)
         return
 
     app_type = REQUEST_TYPES.get(app_details['type'], {}).get('name', app_details['type'])
+    has_photo = "✅" if app_details.get('photo_id') else "❌"
+    
     text = (
         f"📨 Новая заявка #{app_id}\n"
         f"• Тип: {app_type}\n"
+        f"• Фото: {has_photo}\n"
         f"• От: @{app_details['username'] or 'N/A'} (ID: {app_details['user_id']})\n"
         f"• Текст: {app_details['text'][:200]}...\n\n"
         "Выберите действие:"
@@ -498,7 +514,7 @@ async def notify_admin_new_application(bot: Bot, app_id: int, app_details: dict)
         text,
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
-
+    
 async def notify_user_about_decision(bot: Bot, app_details: dict, approved: bool) -> None:
     """Уведомляет пользователя о решении по его заявке."""
     user_id = app_details['user_id']
@@ -822,7 +838,7 @@ async def process_congrat_text(update: Update, context: CallbackContext) -> int:
         "Выберите дату публикации:",
         reply_markup=InlineKeyboardMarkup(keyboard))
     return CONGRAT_DATE_INPUT
-
+    
 async def back_to_holiday_choice(update: Update, context: CallbackContext) -> int:
     """Возвращает к выбору праздника."""
     query = update.callback_query
@@ -981,6 +997,86 @@ async def handle_censor_choice(update: Update, context: CallbackContext) -> int:
             "Некорректный выбор.",
             reply_markup=InlineKeyboardMarkup(keyboard_nav))
         return WAIT_CENSOR_APPROVAL
+        
+async def complete_request(update: Update, context: CallbackContext, text: Optional[str] = None) -> int:
+    """Завершает обработку заявки и сохраняет её в БД с улучшенной обработкой ошибок."""
+    user = update.effective_user
+    if not user:
+        await safe_reply_text(
+            update,
+            "❌ Ошибка: не удалось идентифицировать пользователя.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 В начало", callback_data="back_to_start")]])
+        )
+        return ConversationHandler.END
+
+    try:
+        user_data = context.user_data
+        final_text = text or user_data.get("censored_text") or user_data.get("text", "")
+        
+        if not final_text or 'type' not in user_data:
+            await safe_reply_text(
+                update,
+                "❌ Ошибка: недостаточно данных для создания заявки.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 В начало", callback_data="back_to_start")]])
+            )
+            return ConversationHandler.END
+
+        # Проверяем лимит заявок
+        if not await check_spam(update, context):
+            return ConversationHandler.END
+
+        # Подготовка данных для сохранения
+        app_data = {
+            'user_id': user.id,
+            'username': user.username,
+            'type': user_data['type'],
+            'text': final_text,
+            'photo_id': user_data.get('photo_id'),
+            'from_name': user_data.get('from_name'),
+            'to_name': user_data.get('to_name'),
+            'congrat_type': user_data.get('congrat_type'),
+            'publish_date': user_data.get('publish_date'),
+            'subtype': user_data.get('subtype')
+        }
+
+        # Сохранение в БД с обработкой ошибок
+        try:
+            app_id = add_application(app_data)
+            if not app_id:
+                raise ValueError("Не удалось сохранить заявку в БД")
+        except sqlite3.Error as e:
+            logger.error(f"Ошибка БД при сохранении заявки: {e}")
+            await safe_reply_text(
+                update,
+                "❌ Ошибка сохранения заявки. Попробуйте позже.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 В начало", callback_data="back_to_start")]])
+            )
+            return ConversationHandler.END
+
+        # Уведомление администратора
+        await notify_admin_new_application(context.bot, app_id, app_data)
+
+        # Подтверждение пользователю
+        request_type = REQUEST_TYPES.get(user_data['type'], {}).get('name', user_data['type'])
+        await safe_reply_text(
+            update,
+            f"✅ Ваша заявка на {request_type} успешно создана (№{app_id})!\n"
+            "Она будет опубликована после проверки модератором.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 В начало", callback_data="back_to_start")]])
+        )
+
+        return ConversationHandler.END
+
+    except Exception as e:
+        logger.error(f"Критическая ошибка завершения заявки: {e}", exc_info=True)
+        await safe_reply_text(
+            update,
+            "❌ Произошла непредвиденная ошибка. Пожалуйста, попробуйте позже.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 В начало", callback_data="back_to_start")]])
+        )
+        return ConversationHandler.END
+    finally:
+        context.user_data.clear()
 
 async def process_congrat_date(update: Update, context: CallbackContext) -> int:
     """Обрабатывает ввод даты публикации."""
@@ -1119,68 +1215,83 @@ async def handle_admin_decision(update: Update, context: CallbackContext) -> Non
             reply_to_message_id=query.message.message_id
         )
 
-async def complete_request(update: Update, context: CallbackContext, text: str = None) -> int:
-    """Завершает создание заявки и отправляет на модерацию"""
-    try:
-        user = update.effective_user
-        if not user:
-            raise ValueError("Не удалось получить данные пользователя")
+async def handle_photo_message(update: Update, context: CallbackContext) -> int:
+    """
+    Обрабатывает сообщения с фотографиями для новостей и объявлений.
+    Проверяет размер файла, тип заявки и наличие подписи.
+    
+    Args:
+        update: Объект Update от Telegram.
+        context: Контекст CallbackContext.
+    
+    Returns:
+        int: Следующее состояние диалога или ConversationHandler.END.
+    """
+    if not update.message or not update.message.photo:
+        await safe_reply_text(
+            update,
+            "❌ Пожалуйста, отправьте фото с подписью.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 В начало", callback_data="back_to_start")]])
+        )
+        return ConversationHandler.END
 
-        user_data = context.user_data
-        if not text:
-            text = user_data.get('censored_text', user_data.get('text', ''))
+    try:
+        # Получаем фото с наивысшим качеством (последний элемент в массиве)
+        photo = update.message.photo[-1]
+        file = await context.bot.get_file(photo.file_id)
         
-        if not text or 'type' not in user_data:
-            await safe_reply_text(update,
-                "❌ Ошибка: недостаточно данных для создания заявки",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔙 В начало", callback_data="back_to_start")]
-                ]))
+        # Проверка размера файла (максимум 10MB)
+        MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
+        if file.file_size > MAX_FILE_SIZE:
+            await safe_reply_text(
+                update,
+                "❌ Файл слишком большой (максимум 10MB). Пожалуйста, сожмите фото.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 В начало", callback_data="back_to_start")]])
+            )
             return ConversationHandler.END
 
-        app_data = {
-            'user_id': user.id,
-            'username': user.username,
-            'type': user_data['type'],
-            'text': text,
-            'status': 'pending'
-        }
+        # Сохраняем данные в контексте
+        context.user_data["photo_id"] = photo.file_id
+        context.user_data["text"] = update.message.caption or ""
 
-        if user_data['type'] == 'congrat':
-            app_data.update({
-                'from_name': user_data.get('from_name', ''),
-                'to_name': user_data.get('to_name', ''),
-                'congrat_type': user_data.get('congrat_type'),
-                'publish_date': user_data.get('publish_date')
-            })
-        elif user_data['type'] == 'announcement':
-            app_data['subtype'] = user_data.get('subtype')
+        # Проверяем тип заявки (фото разрешены только для новостей и объявлений)
+        request_type = context.user_data.get("type")
+        if request_type not in ["news", "announcement"]:
+            await safe_reply_text(
+                update,
+                "❌ Фото можно прикреплять только к новостям и объявлениям.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 В начало", callback_data="back_to_start")]])
+            )
+            return ConversationHandler.END
 
-        app_id = add_application(app_data)
-        if not app_id:
-            raise ValueError("Не удалось сохранить заявку в БД")
+        # Если есть подпись - сразу обрабатываем, иначе запрашиваем текст
+        if context.user_data["text"].strip():
+            return await process_announce_news_text(update, context)
+        else:
+            await safe_reply_text(
+                update,
+                "📝 Введите текст для новости/объявления:",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 В начало", callback_data="back_to_start")]])
+            )
+            return ANNOUNCE_TEXT_INPUT
 
-        await safe_reply_text(update,
-            "✅ Ваша заявка принята на модерацию! Мы уведомим вас о решении.",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔙 В начало", callback_data="back_to_start")]
-            ]))
-        
-        await notify_admin_new_application(context.bot, app_id, app_data)
-        
-        return ConversationHandler.END
-
+    except TelegramError as e:
+        logger.error(f"Telegram API error in handle_photo_message: {str(e)}")
+        await safe_reply_text(
+            update,
+            "❌ Ошибка Telegram при загрузке фото. Попробуйте отправить снова.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 В начало", callback_data="back_to_start")]])
+        )
     except Exception as e:
-        logger.error(f"Ошибка в complete_request: {e}", exc_info=True)
-        await safe_reply_text(update,
-            "❌ Произошла ошибка при обработке вашей заявки. Пожалуйста, попробуйте позже.",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔙 В начало", callback_data="back_to_start")]
-            ]))
-        return ConversationHandler.END
-    finally:
-        context.user_data.clear()
-
+        logger.error(f"Unexpected error in handle_photo_message: {str(e)}", exc_info=True)
+        await safe_reply_text(
+            update,
+            "⚠️ Произошла непредвиденная ошибка. Пожалуйста, попробуйте позже.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 В начало", callback_data="back_to_start")]])
+        )
+    
+    return ConversationHandler.END
+        
 async def check_spam(update: Update, context: CallbackContext) -> bool:
     """Проверяет пользователя на спам."""
     user = update.effective_user
@@ -1208,16 +1319,25 @@ def setup_handlers(application: Application) -> None:
         entry_points=[CommandHandler('start', start_command)],
         states={
             TYPE_SELECTION: [CallbackQueryHandler(handle_type_selection)],
-            SENDER_NAME_INPUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_sender_name)],
-            RECIPIENT_NAME_INPUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_recipient_name)],
+            SENDER_NAME_INPUT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, get_sender_name),
+            ],
+            RECIPIENT_NAME_INPUT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, get_recipient_name),
+            ],
             CONGRAT_HOLIDAY_CHOICE: [CallbackQueryHandler(handle_congrat_holiday_choice)],
-            CUSTOM_CONGRAT_MESSAGE_INPUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_congrat_text)],
+            CUSTOM_CONGRAT_MESSAGE_INPUT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, process_congrat_text),
+            ],
             CONGRAT_DATE_INPUT: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, process_congrat_date),
                 CallbackQueryHandler(process_congrat_date)
             ],
             ANNOUNCE_SUBTYPE_SELECTION: [CallbackQueryHandler(handle_announce_subtype_selection)],
-            ANNOUNCE_TEXT_INPUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_announce_news_text)],
+            ANNOUNCE_TEXT_INPUT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, process_announce_news_text),
+                MessageHandler(filters.PHOTO, handle_photo_message)
+            ],
             WAIT_CENSOR_APPROVAL: [CallbackQueryHandler(handle_censor_choice)]
         },
         fallbacks=[
@@ -1225,7 +1345,7 @@ def setup_handlers(application: Application) -> None:
             CallbackQueryHandler(back_to_start, pattern="^back_to_start$"),
             CallbackQueryHandler(back_to_holiday_choice, pattern="^back_to_holiday_choice$"),
             CallbackQueryHandler(back_to_custom_message, pattern="^back_to_custom_message$"),
-            MessageHandler(filters.TEXT & ~filters.COMMAND, unknown_message_fallback)
+            MessageHandler(filters.ALL, unknown_message_fallback)
         ],
         per_message=False
     )
@@ -1235,67 +1355,97 @@ def setup_handlers(application: Application) -> None:
         CallbackQueryHandler(handle_admin_decision, pattern=r"^(approve|reject|view)_\d+$"),
         group=2
     )
-    application.add_handler(
-        MessageHandler(filters.TEXT & ~filters.COMMAND, check_spam),
-        group=3
-    )
-
-@app.on_event("startup")
+    
 async def startup_event():
     """Запуск бота при старте FastAPI."""
     global application
-    application = Application.builder().token(TOKEN).build()
-    setup_handlers(application)
-    
-    scheduler = AsyncIOScheduler(timezone=TIMEZONE)
-    scheduler.add_job(
-        check_pending_applications,
-        'interval',
-        minutes=5,
-        args=[application]
-    )
-    scheduler.start()
-    
-    if WEBHOOK_URL:
-        logger.info("Запуск в режиме вебхука...")
-        await application.initialize()
-        await application.start()
-        await application.bot.set_webhook(
-            url=f"{WEBHOOK_URL}/webhook",
-            allowed_updates=Update.ALL_TYPES,
-            secret_token=WEBHOOK_SECRET
+    try:
+        if not TOKEN:
+            raise ValueError("Токен бота не задан!")
+        
+        # Очистка старых данных при запуске
+        logger.info("Запуск очистки старых заявок при старте бота")
+        cleanup_old_applications()
+        
+        application = Application.builder().token(TOKEN).build()
+        if not application:
+            raise ValueError("Не удалось инициализировать бота")
+            
+        setup_handlers(application)
+        
+        scheduler = AsyncIOScheduler(timezone=TIMEZONE)
+        scheduler.add_job(
+            check_pending_applications,
+            'interval',
+            minutes=5,
+            args=[application],
+            misfire_grace_time=300
         )
+        scheduler.add_job(
+            cleanup_old_applications,
+            'cron',
+            day_of_week='sun',  # Каждое воскресенье
+            hour=3,             # В 3 часа ночи
+            args=[30],          # Удалять старше 30 дней
+            misfire_grace_time=3600
+        )
+        scheduler.start()
+        
+        if WEBHOOK_URL:
+            logger.info("Запуск в режиме вебхука...")
+            await application.initialize()
+            await application.start()
+            await application.bot.set_webhook(
+                url=f"{WEBHOOK_URL}/webhook",
+                allowed_updates=Update.ALL_TYPES,
+                secret_token=WEBHOOK_SECRET
+            )
+        else:
+            logger.info("Запуск в режиме polling...")
+            asyncio.create_task(application.run_polling())
         
         BOT_STATE['running'] = True
         BOT_STATE['start_time'] = datetime.now(TIMEZONE)
-    else:
-        logger.info("Запуск в режиме polling...")
-        BOT_STATE['running'] = True
-        BOT_STATE['start_time'] = datetime.now(TIMEZONE)
-        asyncio.create_task(application.run_polling())
-
-from fastapi import Request
-from fastapi.responses import JSONResponse
-
+        logger.info("Бот успешно запущен")
+        
+    except Exception as e:
+        logger.error(f"Ошибка запуска бота: {e}", exc_info=True)
+        BOT_STATE['running'] = False
+        raise
+        
 @app.post("/webhook")
 async def handle_webhook(update: dict, request: Request):
-    # Проверка секретного токена
-    if request.headers.get("X-Telegram-Bot-Api-Secret-Token") != WEBHOOK_SECRET:
-        return JSONResponse(content={"status": "error", "detail": "Invalid token"}, status_code=403)
-
-    # Ограничение размера сообщения
-    if len(str(update)) > 10_000:
-        return JSONResponse(content={"status": "error", "detail": "Payload too large"}, status_code=413)
-
+    """Обрабатывает входящие вебхуки от Telegram."""
     try:
+        # Проверка секретного токена
+        if WEBHOOK_SECRET and request.headers.get("X-Telegram-Bot-Api-Secret-Token") != WEBHOOK_SECRET:
+            return JSONResponse(
+                content={"status": "error", "detail": "Invalid token"},
+                status_code=403
+            )
+
+        # Проверка размера данных
+        if len(str(update)) > 10_000:
+            return JSONResponse(
+                content={"status": "error", "detail": "Payload too large"},
+                status_code=413
+            )
+
         if application:
             await application.update_queue.put(Update.de_json(update, application.bot))
             return {"status": "ok"}
-        return JSONResponse(content={"status": "error", "detail": "Application not initialized"}, status_code=500)
+        
+        return JSONResponse(
+            content={"status": "error", "detail": "Application not initialized"},
+            status_code=500
+        )
+
     except Exception as e:
-        logger.error(f"Webhook error: {str(e)}", extra={"update": update})
-        return JSONResponse(content={"status": "error", "detail": str(e)}, status_code=500)
-       
+        logger.error(f"Webhook error: {str(e)}")
+        return JSONResponse(
+            content={"status": "error", "detail": str(e)},
+            status_code=500
+        )
 
 def main():
     """Точка входа для запуска сервера."""
