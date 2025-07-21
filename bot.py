@@ -32,7 +32,6 @@ from telegram.ext import (
     filters,
 )
 
-app = FastAPI()  # Создание экземпляра FastAPI должно быть после импортов
 # Загрузка переменных окружения
 load_dotenv()
 
@@ -364,18 +363,14 @@ async def send_bot_status(bot: Bot, status: str, force_send: bool = False) -> bo
             f"• Рабочее время: {'Да' if is_working_hours() else 'Нет'}\n"
             f"• Uptime: {get_uptime()}"
         )
-
-        await bot.send_message(
+        sent = await bot.send_message(
             chat_id=ADMIN_CHAT_ID,
             text=message,
             disable_notification=True
         )
-        return True
-    except TelegramError as e:
-        logger.warning(f"Превышен лимит сообщений или другая ошибка Telegram: {e}")
-        return False
+        return sent is not None
     except Exception as e:
-        logger.error(f"Ошибка отправки статуса: {str(e)}")
+        logger.error(f"Не удалось отправить статус админу: {e}")
         return False
 
 async def publish_to_channel(app_id: int, bot: Bot) -> bool:
@@ -1362,7 +1357,31 @@ async def check_spam(update: Update, context: CallbackContext) -> bool:
         )
         return False
     return True
-
+	
+async def help_command(update: Update, context: CallbackContext) -> None:
+    """Обработчик команды /help"""
+    help_text = (
+        "ℹ️ <b>Как работает бот</b>:\n\n"
+        "1. Нажмите /start — появится меню.\n"
+        "2. Выберите тип:\n"
+        "   • 🎉 <b>Поздравление</b> — на праздник\n"
+        "   • 📢 <b>Объявление</b> — попутка, потеряли/нашли\n"
+        "   • 🗞️ <b>Новость</b> — от жителя города\n\n"
+        "3. Заполните форму.\n"
+        "4. Модератор проверит.\n"
+        "5. Если одобрено — появится в канале.\n\n"
+        "❗ Можно прикреплять фото к объявлениям и новостям.\n"
+        "⏰ Работаем круглосуточно."
+    )
+    keyboard = [
+        [InlineKeyboardButton("🚀 Начать", callback_data="back_to_start")]
+    ]
+    await safe_reply_text(
+        update,
+        help_text,
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode='HTML'
+    )
 async def unknown_message_fallback(update: Update, context: CallbackContext) -> int:
     """Обработчик для неизвестных сообщений."""
     logger.info(f"Получено неизвестное сообщение от @{update.effective_user.username}: {update.message.text}")
@@ -1414,7 +1433,8 @@ def setup_handlers(application: Application) -> None:
         CallbackQueryHandler(handle_admin_decision, pattern=r"^(approve|reject|view)_\d+$"),
         group=2
     )
-    
+    # Обработчик команды /help
+    application.add_handler(CommandHandler('help', help_command))
 @app.on_event("startup")
 async def startup_event():
     """Запуск бота при старте FastAPI."""
@@ -1442,6 +1462,13 @@ async def startup_event():
             args=[application],
             misfire_grace_time=300
         )
+		scheduler.add_job(
+            cleanup_old_applications,
+            'cron',
+            day='*/7',  # Каждые 7 дней
+            args=[30],  # Передаём 30 дней как параметр
+            timezone=TIMEZONE
+        )
         scheduler.start()
         
         # Настройка вебхука или polling
@@ -1460,7 +1487,14 @@ async def startup_event():
         
         BOT_STATE['running'] = True
         BOT_STATE['start_time'] = datetime.now(TIMEZONE)
-        logger.info("Бот успешно запущен")
+		
+        # Отправляем админу сообщение о запуске
+        if ADMIN_CHAT_ID:
+            await send_bot_status(context.bot, "🟢 Бот успешно запущен!", force_send=True)
+        else:
+            logger.warning("ID админа не задан — уведомление не отправлено.")
+			
+		logger.info("Бот успешно запущен")
         
     except Exception as e:
         logger.critical(f"Ошибка запуска бота: {e}", exc_info=True)
@@ -1505,11 +1539,9 @@ def main():
     """Точка входа для запуска сервера."""
     # Инициализация БД
     init_db()
-    
     if not check_environment():
         logger.error("Проверка окружения не пройдена!")
         sys.exit(1)
-    
     # Запуск сервера
     uvicorn.run(
         app,
