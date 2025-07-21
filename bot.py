@@ -1462,11 +1462,11 @@ async def startup_event():
             args=[application],
             misfire_grace_time=300
         )
-		scheduler.add_job(
+        scheduler.add_job(
             cleanup_old_applications,
             'cron',
-            day='*/7',  # Каждые 7 дней
-            args=[30],  # Передаём 30 дней как параметр
+            day='*/7',
+            args=[30],
             timezone=TIMEZONE
         )
         scheduler.start()
