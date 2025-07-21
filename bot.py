@@ -146,38 +146,55 @@ def cleanup_old_applications(days: int = 30) -> None:
         logger.error(f"Ошибка очистки БД: {e}", exc_info=True)
 
 def get_db_connection() -> sqlite3.Connection:
-    """Устанавливает соединение с базой данных."""
+    """Устанавливает соединение с базой данных с настройками."""
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")  # Включаем режим WAL для лучшей производительности
+    conn.execute("PRAGMA foreign_keys=ON")   # Включаем поддержку внешних ключей
     return conn
-
+    
 def init_db():
     """Инициализирует таблицы базы данных."""
     try:
         with get_db_connection() as conn:
+            # Создаем таблицу applications
             conn.execute("""
-            CREATE TABLE IF NOT EXISTS applications (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
-                username TEXT,
-                type TEXT NOT NULL,
-                subtype TEXT,
-                from_name TEXT,
-                to_name TEXT,
-                text TEXT NOT NULL,
-                photo_id TEXT,  # Добавлено для хранения ID фото
-                status TEXT DEFAULT 'pending',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                publish_date DATE,
-                published_at TIMESTAMP,
-                congrat_type TEXT
-            )
+                CREATE TABLE IF NOT EXISTS applications (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    username TEXT,
+                    type TEXT NOT NULL,
+                    subtype TEXT,
+                    from_name TEXT,
+                    to_name TEXT,
+                    text TEXT NOT NULL,
+                    photo_id TEXT,
+                    status TEXT DEFAULT 'pending',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    publish_date DATE,
+                    published_at TIMESTAMP,
+                    congrat_type TEXT
+                )
             """)
+            
+            # Создаем индекс для оптимизации запросов
             conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_approved_unpublished
-            ON applications(status, published_at)
-            WHERE status = 'approved' AND published_at IS NULL
+                CREATE INDEX IF NOT EXISTS idx_approved_unpublished
+                ON applications(status, published_at)
+                WHERE status = 'approved' AND published_at IS NULL
             """)
+            
+            # Создаем таблицу для хранения пользовательских ограничений
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS user_limits (
+                    user_id INTEGER PRIMARY KEY,
+                    last_request_time TIMESTAMP,
+                    request_count INTEGER DEFAULT 0
+                )
+            """)
+            
+            conn.commit()
+            logger.info("База данных успешно инициализирована")
     except sqlite3.Error as e:
         logger.error(f"Ошибка инициализации БД: {e}", exc_info=True)
         raise
