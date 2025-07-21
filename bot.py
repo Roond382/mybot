@@ -1487,7 +1487,7 @@ async def startup_event():
 
         # Отправляем админу сообщение о запуске
         if ADMIN_CHAT_ID:
-            await send_bot_status(context.bot, "🟢 Бот успешно запущен!", force_send=True)
+            await send_bot_status(application.bot, "🟢 Бот успешно запущен!", force_send=True)
         else:
             logger.warning("ID админа не задан — уведомление не отправлено.")
 
