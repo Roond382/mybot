@@ -391,24 +391,21 @@ async def publish_to_channel(app_id: int, bot: Bot) -> bool:
 
     current_time = datetime.now(TIMEZONE).strftime("%H:%M")
     
-    if app_details['type'] == 'congrat':
-        message_text = (
-            f"{app_details['text']}\n\n"
-            f"#НебольшойМирНиколаевск\n"
-            f"🕒 {current_time}"
-        )
-    else:
-        message_text = (
-            f"{app_details['text']}\n\n"
-            f"#НебольшойМирНиколаевск\n"
-            f"🕒 {current_time}"
-        )
+    # Используйте доступ к полям через индексацию вместо .get()
+    text = app_details['text']
+    photo_id = app_details['photo_id'] if 'photo_id' in app_details else None
+    
+    message_text = (
+        f"{text}\n\n"
+        f"#НебольшойМирНиколаевск\n"
+        f"🕒 {current_time}"
+    )
 
     try:
-        if app_details.get('photo_id'):
+        if photo_id:
             await bot.send_photo(
                 chat_id=CHANNEL_ID,
-                photo=app_details['photo_id'],
+                photo=photo_id,
                 caption=message_text,
                 disable_notification=True
             )
@@ -428,24 +425,26 @@ async def publish_to_channel(app_id: int, bot: Bot) -> bool:
 
 async def check_pending_applications(context: CallbackContext) -> None:
     """Проверяет и публикует одобренные заявки."""
-    applications = get_approved_unpublished_applications()
-    for app in applications:
-        if app['type'] == 'congrat' and app['congrat_type'] == 'custom':
-            if app['publish_date']:
-                publish_date_obj = datetime.strptime(app['publish_date'], "%Y-%m-%d").date()
-                today = datetime.now().date()
-                if publish_date_obj <= today:
-                    logger.info(f"Плановая публикация пользовательского поздравления #{app['id']} (дата подошла).")
+    try:
+        applications = get_approved_unpublished_applications()
+        for app in applications:
+            try:
+                if app['type'] == 'congrat' and app['congrat_type'] == 'custom':
+                    if app['publish_date']:
+                        publish_date_obj = datetime.strptime(app['publish_date'], "%Y-%m-%d").date()
+                        today = datetime.now().date()
+                        if publish_date_obj <= today:
+                            logger.info(f"Плановая публикация пользовательского поздравления #{app['id']} (дата подошла).")
+                            await publish_to_channel(app['id'], context.bot)
+                            await asyncio.sleep(1)
+                else:
+                    logger.info(f"Публикация заявки #{app['id']} типа '{app['type']}'")
                     await publish_to_channel(app['id'], context.bot)
                     await asyncio.sleep(1)
-            else:
-                logger.warning(f"Пользовательское поздравление #{app['id']} без даты публикации. Публикуем немедленно.")
-                await publish_to_channel(app['id'], context.bot)
-                await asyncio.sleep(1)
-        elif app['type'] in ['news', 'announcement'] or (app['type'] == 'congrat' and app['congrat_type'] != 'custom'):
-            logger.warning(f"Заявка #{app['id']} типа '{app['type']}' не была опубликована. Публикуем сейчас.")
-            await publish_to_channel(app['id'], context.bot)
-            await asyncio.sleep(1)
+            except Exception as e:
+                logger.error(f"Ошибка публикации заявки #{app.get('id', 'N/A')}: {str(e)}")
+    except Exception as e:
+        logger.error(f"Ошибка проверки заявок: {str(e)}")
 
 def is_working_hours() -> bool:
     """Проверяет, находится ли текущее время в рабочих часах."""
