@@ -2,9 +2,9 @@ python-telegram-bot==20.8
 fastapi==0.95.2
 uvicorn==0.22.0
 python-dotenv==1.0.0
-apscheduler>=4.0.0
+APScheduler==3.10.4
 aiofiles==23.2.1
 pytz==2023.3
 Pillow==10.3.0
 httpx==0.26.0
-setuptools==80.9.0  # Фиксируем версию чтобы избежать предупреждений
+setuptools==80.9.0
