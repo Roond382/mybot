@@ -6,7 +6,9 @@ import re
 import asyncio
 from datetime import datetime, timedelta
 from typing import Dict, Any, Optional, Tuple, List
-
+from fastapi import Request
+from fastapi.responses import JSONResponse
+from fastapi import HTTPException
 # Сторонние библиотеки
 import pytz
 from dotenv import load_dotenv
@@ -999,9 +1001,10 @@ async def handle_censor_choice(update: Update, context: CallbackContext) -> int:
         return WAIT_CENSOR_APPROVAL
         
 async def complete_request(update: Update, context: CallbackContext, text: Optional[str] = None) -> int:
-    """Завершает обработку заявки и сохраняет её в БД с улучшенной обработкой ошибок."""
+    """Завершает обработку заявки с транзакционной безопасностью."""
     user = update.effective_user
     if not user:
+        logger.error("Не удалось идентифицировать пользователя")
         await safe_reply_text(
             update,
             "❌ Ошибка: не удалось идентифицировать пользователя.",
@@ -1014,6 +1017,7 @@ async def complete_request(update: Update, context: CallbackContext, text: Optio
         final_text = text or user_data.get("censored_text") or user_data.get("text", "")
         
         if not final_text or 'type' not in user_data:
+            logger.error("Недостаточно данных для создания заявки")
             await safe_reply_text(
                 update,
                 "❌ Ошибка: недостаточно данных для создания заявки.",
@@ -1021,37 +1025,64 @@ async def complete_request(update: Update, context: CallbackContext, text: Optio
             )
             return ConversationHandler.END
 
-        # Проверяем лимит заявок
+        # Проверка лимита заявок
         if not await check_spam(update, context):
             return ConversationHandler.END
 
-        # Подготовка данных для сохранения
+        # Подготовка данных с валидацией
         app_data = {
             'user_id': user.id,
             'username': user.username,
             'type': user_data['type'],
             'text': final_text,
             'photo_id': user_data.get('photo_id'),
-            'from_name': user_data.get('from_name'),
-            'to_name': user_data.get('to_name'),
+            'from_name': user_data.get('from_name', ''),  # Добавлены значения по умолчанию
+            'to_name': user_data.get('to_name', ''),
             'congrat_type': user_data.get('congrat_type'),
             'publish_date': user_data.get('publish_date'),
             'subtype': user_data.get('subtype')
         }
 
-        # Сохранение в БД с обработкой ошибок
+        # Транзакционная обработка БД
+        conn = None
         try:
-            app_id = add_application(app_data)
-            if not app_id:
-                raise ValueError("Не удалось сохранить заявку в БД")
+            conn = get_db_connection()
+            cur = conn.cursor()
+            
+            cur.execute("""
+                INSERT INTO applications
+                (user_id, username, type, subtype, from_name, to_name, text, photo_id, publish_date, congrat_type)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                app_data['user_id'],
+                app_data.get('username'),
+                app_data['type'],
+                app_data.get('subtype'),
+                app_data.get('from_name'),
+                app_data.get('to_name'),
+                app_data['text'],
+                app_data.get('photo_id'),
+                app_data.get('publish_date'),
+                app_data.get('congrat_type')
+            ))
+            
+            app_id = cur.lastrowid
+            conn.commit()
+            logger.info(f"Заявка #{app_id} успешно сохранена")
+            
         except sqlite3.Error as e:
-            logger.error(f"Ошибка БД при сохранении заявки: {e}")
+            logger.error(f"Ошибка БД: {str(e)}", exc_info=True)
+            if conn:
+                conn.rollback()
             await safe_reply_text(
                 update,
                 "❌ Ошибка сохранения заявки. Попробуйте позже.",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 В начало", callback_data="back_to_start")]])
             )
             return ConversationHandler.END
+        finally:
+            if conn:
+                conn.close()
 
         # Уведомление администратора
         await notify_admin_new_application(context.bot, app_id, app_data)
@@ -1068,7 +1099,7 @@ async def complete_request(update: Update, context: CallbackContext, text: Optio
         return ConversationHandler.END
 
     except Exception as e:
-        logger.error(f"Критическая ошибка завершения заявки: {e}", exc_info=True)
+        logger.critical(f"Критическая ошибка: {str(e)}", exc_info=True)
         await safe_reply_text(
             update,
             "❌ Произошла непредвиденная ошибка. Пожалуйста, попробуйте позже.",
@@ -1076,8 +1107,9 @@ async def complete_request(update: Update, context: CallbackContext, text: Optio
         )
         return ConversationHandler.END
     finally:
+        # Очистка контекста в любом случае
         context.user_data.clear()
-
+        
 async def process_congrat_date(update: Update, context: CallbackContext) -> int:
     """Обрабатывает ввод даты публикации."""
     keyboard_nav = [
@@ -1218,7 +1250,7 @@ async def handle_admin_decision(update: Update, context: CallbackContext) -> Non
 async def handle_photo_message(update: Update, context: CallbackContext) -> int:
     """
     Обрабатывает сообщения с фотографиями для новостей и объявлений.
-    Проверяет размер файла, тип заявки и наличие подписи.
+    Улучшенная версия с дополнительными проверками и обработкой ошибок.
     
     Args:
         update: Объект Update от Telegram.
@@ -1228,6 +1260,7 @@ async def handle_photo_message(update: Update, context: CallbackContext) -> int:
         int: Следующее состояние диалога или ConversationHandler.END.
     """
     if not update.message or not update.message.photo:
+        logger.warning("Получено сообщение без фото")
         await safe_reply_text(
             update,
             "❌ Пожалуйста, отправьте фото с подписью.",
@@ -1236,13 +1269,14 @@ async def handle_photo_message(update: Update, context: CallbackContext) -> int:
         return ConversationHandler.END
 
     try:
-        # Получаем фото с наивысшим качеством (последний элемент в массиве)
-        photo = update.message.photo[-1]
+        # Получаем фото с оптимальным качеством (не самое большое)
+        photo = update.message.photo[-2]  # -1 - самое большое, -2 - оптимальное
         file = await context.bot.get_file(photo.file_id)
         
-        # Проверка размера файла (максимум 10MB)
+        # Расширенные проверки
         MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
         if file.file_size > MAX_FILE_SIZE:
+            logger.warning(f"Файл слишком большой: {file.file_size} байт")
             await safe_reply_text(
                 update,
                 "❌ Файл слишком большой (максимум 10MB). Пожалуйста, сожмите фото.",
@@ -1250,13 +1284,24 @@ async def handle_photo_message(update: Update, context: CallbackContext) -> int:
             )
             return ConversationHandler.END
 
-        # Сохраняем данные в контексте
+        # Проверка типа контента
+        if not file.file_path or not any(file.file_path.lower().endswith(ext) for ext in ['.jpg', '.jpeg', '.png']):
+            logger.warning(f"Неподдерживаемый формат файла: {file.file_path}")
+            await safe_reply_text(
+                update,
+                "❌ Поддерживаются только JPG/PNG изображения.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 В начало", callback_data="back_to_start")]])
+            )
+            return ConversationHandler.END
+
+        # Сохраняем данные
         context.user_data["photo_id"] = photo.file_id
         context.user_data["text"] = update.message.caption or ""
 
-        # Проверяем тип заявки (фото разрешены только для новостей и объявлений)
+        # Проверка типа заявки
         request_type = context.user_data.get("type")
         if request_type not in ["news", "announcement"]:
+            logger.warning(f"Некорректный тип заявки для фото: {request_type}")
             await safe_reply_text(
                 update,
                 "❌ Фото можно прикреплять только к новостям и объявлениям.",
@@ -1264,26 +1309,28 @@ async def handle_photo_message(update: Update, context: CallbackContext) -> int:
             )
             return ConversationHandler.END
 
-        # Если есть подпись - сразу обрабатываем, иначе запрашиваем текст
+        # Если есть подпись - обрабатываем, иначе запрашиваем текст
         if context.user_data["text"].strip():
+            logger.info("Фото получено с подписью, переходим к обработке")
             return await process_announce_news_text(update, context)
-        else:
-            await safe_reply_text(
-                update,
-                "📝 Введите текст для новости/объявления:",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 В начало", callback_data="back_to_start")]])
-            )
-            return ANNOUNCE_TEXT_INPUT
-
-    except TelegramError as e:
-        logger.error(f"Telegram API error in handle_photo_message: {str(e)}")
+        
+        logger.info("Фото получено без подписи, запрашиваем текст")
         await safe_reply_text(
             update,
-            "❌ Ошибка Telegram при загрузке фото. Попробуйте отправить снова.",
+            "📝 Введите текст для новости/объявления:",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 В начало", callback_data="back_to_start")]])
+        )
+        return ANNOUNCE_TEXT_INPUT
+
+    except TelegramError as e:
+        logger.error(f"Ошибка Telegram API: {str(e)}", exc_info=True)
+        await safe_reply_text(
+            update,
+            "❌ Ошибка при загрузке фото. Попробуйте отправить снова.",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 В начало", callback_data="back_to_start")]])
         )
     except Exception as e:
-        logger.error(f"Unexpected error in handle_photo_message: {str(e)}", exc_info=True)
+        logger.error(f"Неожиданная ошибка: {str(e)}", exc_info=True)
         await safe_reply_text(
             update,
             "⚠️ Произошла непредвиденная ошибка. Пожалуйста, попробуйте позже.",
@@ -1414,39 +1461,62 @@ async def startup_event():
         raise
         
 @app.post("/webhook")
-async def handle_webhook(update: dict, request: Request):
-    """Обрабатывает входящие вебхуки от Telegram."""
+async def webhook_handler(request: Request):
+    """Обработчик вебхука от Telegram с улучшенной безопасностью и логированием."""
     try:
+        # Логирование входящего запроса для отладки
+        client_ip = request.client.host if request.client else "unknown"
+        logger.info(f"Входящий вебхук от IP: {client_ip}")
+
         # Проверка секретного токена
-        if WEBHOOK_SECRET and request.headers.get("X-Telegram-Bot-Api-Secret-Token") != WEBHOOK_SECRET:
-            return JSONResponse(
-                content={"status": "error", "detail": "Invalid token"},
-                status_code=403
-            )
+        if WEBHOOK_SECRET:
+            token = request.headers.get("X-Telegram-Bot-Api-Secret-Token")
+            if not token:
+                logger.warning("Отсутствует секретный токен в заголовках")
+                raise HTTPException(status_code=403, detail="Secret token required")
+            
+            if not secrets.compare_digest(token, WEBHOOK_SECRET):
+                logger.warning("Неверный секретный токен")
+                raise HTTPException(status_code=403, detail="Invalid token")
 
-        # Проверка размера данных
-        if len(str(update)) > 10_000:
-            return JSONResponse(
-                content={"status": "error", "detail": "Payload too large"},
-                status_code=413
-            )
+        # Проверка типа содержимого
+        content_type = request.headers.get("content-type")
+        if content_type != "application/json":
+            logger.warning(f"Неподдерживаемый Content-Type: {content_type}")
+            raise HTTPException(status_code=400, detail="Expected application/json")
 
-        if application:
-            await application.update_queue.put(Update.de_json(update, application.bot))
-            return {"status": "ok"}
-        
-        return JSONResponse(
-            content={"status": "error", "detail": "Application not initialized"},
-            status_code=500
-        )
+        # Получение данных с проверкой размера
+        try:
+            update_data = await request.json()
+        except ValueError as e:
+            logger.warning(f"Ошибка парсинга JSON: {str(e)}")
+            raise HTTPException(status_code=400, detail="Invalid JSON")
 
+        if not update_data:
+            logger.warning("Пустое тело запроса")
+            raise HTTPException(status_code=400, detail="Empty request body")
+
+        # Проверка инициализации приложения
+        if not application or not application.update_queue:
+            logger.error("Приложение бота не инициализировано")
+            raise HTTPException(status_code=503, detail="Bot not initialized")
+
+        # Обработка обновления
+        update = Update.de_json(update_data, application.bot)
+        if not update:
+            logger.warning("Не удалось распарсить обновление")
+            raise HTTPException(status_code=400, detail="Invalid update")
+
+        await application.update_queue.put(update)
+        logger.info("Обновление успешно обработано")
+        return {"status": "ok"}
+
+    except HTTPException:
+        raise  # Пробрасываем уже обработанные HTTP исключения
     except Exception as e:
-        logger.error(f"Webhook error: {str(e)}")
-        return JSONResponse(
-            content={"status": "error", "detail": str(e)},
-            status_code=500
-        )
-
+        logger.error(f"Критическая ошибка вебхука: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error")
+        
 def main():
     """Точка входа для запуска сервера."""
     # Инициализация БД
