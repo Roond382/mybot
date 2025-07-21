@@ -7,22 +7,20 @@ import asyncio
 import secrets
 from datetime import datetime, timedelta
 from typing import Dict, Any, Optional, Tuple, List
-from fastapi import Request
+
+# FastAPI импорты (исправлено)
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
-from fastapi import HTTPException
+import uvicorn
+
 # Сторонние библиотеки
 import pytz
 from dotenv import load_dotenv
 import aiofiles
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-# Telegram Bot
-from telegram import (
-    Bot,
-    Update,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-)
+# Telegram Bot импорты
+from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.error import TelegramError
 from telegram.ext import (
     Application,
@@ -34,10 +32,7 @@ from telegram.ext import (
     filters,
 )
 
-# FastAPI для веб-сервера
-from fastapi import FastAPI
-import uvicorn
-
+app = FastAPI()  # Создание экземпляра FastAPI должно быть после импортов
 # Загрузка переменных окружения
 load_dotenv()
 
@@ -1421,23 +1416,25 @@ def setup_handlers(application: Application) -> None:
         group=2
     )
     
+@app.on_event("startup")
 async def startup_event():
     """Запуск бота при старте FastAPI."""
     global application
+    
     try:
         if not TOKEN:
             raise ValueError("Токен бота не задан!")
         
-        # Очистка старых данных при запуске
-        logger.info("Запуск очистки старых заявок при старте бота")
-        cleanup_old_applications()
+        logger.info("Инициализация базы данных...")
+        init_db()
         
+        logger.info("Создание экземпляра Application...")
         application = Application.builder().token(TOKEN).build()
-        if not application:
-            raise ValueError("Не удалось инициализировать бота")
-            
+        
+        logger.info("Настройка обработчиков...")
         setup_handlers(application)
         
+        # Инициализация планировщика
         scheduler = AsyncIOScheduler(timezone=TIMEZONE)
         scheduler.add_job(
             check_pending_applications,
@@ -1446,18 +1443,11 @@ async def startup_event():
             args=[application],
             misfire_grace_time=300
         )
-        scheduler.add_job(
-            cleanup_old_applications,
-            'cron',
-            day_of_week='sun',  # Каждое воскресенье
-            hour=3,             # В 3 часа ночи
-            args=[30],          # Удалять старше 30 дней
-            misfire_grace_time=3600
-        )
         scheduler.start()
         
+        # Настройка вебхука или polling
         if WEBHOOK_URL:
-            logger.info("Запуск в режиме вебхука...")
+            logger.info(f"Установка вебхука на {WEBHOOK_URL}/webhook")
             await application.initialize()
             await application.start()
             await application.bot.set_webhook(
@@ -1474,33 +1464,32 @@ async def startup_event():
         logger.info("Бот успешно запущен")
         
     except Exception as e:
-        logger.error(f"Ошибка запуска бота: {e}", exc_info=True)
+        logger.critical(f"Ошибка запуска бота: {e}", exc_info=True)
         BOT_STATE['running'] = False
         raise
         
 @app.post("/webhook")
 async def webhook_handler(request: Request):
-    """Обработчик вебхука от Telegram с улучшенной безопасностью."""
+    """Обработчик вебхука от Telegram."""
     try:
         client_ip = request.client.host if request.client else "unknown"
         logger.info(f"Входящий вебхук от IP: {client_ip}")
 
-        # Проверка секретного токена (если он задан)
+        # Проверка секретного токена
         if WEBHOOK_SECRET:
             token = request.headers.get("X-Telegram-Bot-Api-Secret-Token")
             if not token:
-                logger.warning("Отсутствует секретный токен в заголовках")
+                logger.warning("Отсутствует секретный токен")
                 raise HTTPException(status_code=403, detail="Secret token required")
             
-            # Безопасное сравнение токенов
             if not secrets.compare_digest(token, WEBHOOK_SECRET):
                 logger.warning("Неверный секретный токен")
                 raise HTTPException(status_code=403, detail="Invalid token")
 
         # Проверка инициализации приложения
-        if not application or not application.update_queue:
+        if not application or not hasattr(application, 'update_queue'):
             logger.error("Приложение бота не инициализировано")
-            raise HTTPException(status_code=503, detail="Bot not initialized")
+            raise HTTPException(status_code=503, detail="Bot application not initialized")
 
         # Обработка обновления
         update_data = await request.json()
@@ -1509,11 +1498,9 @@ async def webhook_handler(request: Request):
         
         return {"status": "ok"}
 
-    except HTTPException:
-        raise
     except Exception as e:
-        logger.error(f"Ошибка обработки вебхука: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Internal server error")
+        logger.error(f"Ошибка обработки вебхука: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
         
 def main():
     """Точка входа для запуска сервера."""
