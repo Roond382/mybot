@@ -7,4 +7,4 @@ aiofiles==23.2.1
 pytz==2023.3
 Pillow==10.3.0
 httpx==0.26.0
-setuptools<81.0.0  # Для совместимости с apscheduler
+setuptools==80.9.0  # Фиксируем версию чтобы избежать предупреждений
