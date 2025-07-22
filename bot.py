@@ -614,6 +614,28 @@ async def handle_type_selection(update: Update, context: CallbackContext) -> int
         )
         return ANNOUNCE_TEXT_INPUT
         
+    elif request_type == "congrat":
+        await safe_edit_message_text(query,
+            "Введите ваше имя (например: *Иванов Виталий*):",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="Markdown"
+        )
+        return SENDER_NAME_INPUT
+        
+    elif request_type == "announcement":
+        keyboard = [
+            [InlineKeyboardButton(subtype, callback_data=f"subtype_{subtype_key}")]
+            for subtype_key, subtype in ANNOUNCE_SUBTYPES.items()
+        ] + [
+            [InlineKeyboardButton("🔙 Вернуться в начало", callback_data="back_to_start")]
+        ]
+        
+        await safe_edit_message_text(query,
+            "Выберите тип объявления:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return ANNOUNCE_SUBTYPE_SELECTION
+        
     else:
         await safe_edit_message_text(query, "❌ Неизвестный тип заявки.")
         return ConversationHandler.END
