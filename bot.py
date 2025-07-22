@@ -854,7 +854,8 @@ async def process_congrat_text(update: Update, context: CallbackContext) -> int:
     """Обрабатывает текст поздравления."""
     if not update.message or not update.message.text or not update.message.text.strip():
         await safe_reply_text(update,
-            "Ошибка: пустое сообщение. Пожалуйста, введите текст.",
+            "Ошибка: пустое сообщение. Пожалуйста, введите текст.\n"
+            "ℹ️ Вы можете прикрепить фото к сообщению (отправьте его как изображение с подписью)",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Вернуться в начало", callback_data="back_to_start")]]))
         return CUSTOM_CONGRAT_MESSAGE_INPUT
 
@@ -887,7 +888,7 @@ async def process_congrat_text(update: Update, context: CallbackContext) -> int:
                 [InlineKeyboardButton("✅ Принять", callback_data="accept")],
                 [InlineKeyboardButton("✏️ Изменить", callback_data="edit")],
                 [InlineKeyboardButton("🔙 Вернуться в начало", callback_data="back_to_start")]
-            ]))
+            ))
         return WAIT_CENSOR_APPROVAL
 
     keyboard = [
@@ -1316,15 +1317,7 @@ async def handle_admin_decision(update: Update, context: CallbackContext) -> Non
 
 async def handle_photo_message(update: Update, context: CallbackContext) -> int:
     """
-    Обрабатывает сообщения с фотографиями для новостей и объявлений.
-    Улучшенная версия с дополнительными проверками и обработкой ошибок.
-    
-    Args:
-        update: Объект Update от Telegram.
-        context: Контекст CallbackContext.
-    
-    Returns:
-        int: Следующее состояние диалога или ConversationHandler.END.
+    Обрабатывает сообщения с фотографиями для новостей, объявлений и поздравлений.
     """
     if not update.message or not update.message.photo:
         logger.warning("Получено сообщение без фото")
@@ -1336,11 +1329,11 @@ async def handle_photo_message(update: Update, context: CallbackContext) -> int:
         return ConversationHandler.END
 
     try:
-        # Получаем фото с оптимальным качеством (не самое большое)
-        photo = update.message.photo[-2]  # -1 - самое большое, -2 - оптимальное
+        # Получаем фото с оптимальным качеством
+        photo = update.message.photo[-2]
         file = await context.bot.get_file(photo.file_id)
         
-        # Расширенные проверки
+        # Проверка размера файла
         MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
         if file.file_size > MAX_FILE_SIZE:
             logger.warning(f"Файл слишком большой: {file.file_size} байт")
@@ -1351,60 +1344,40 @@ async def handle_photo_message(update: Update, context: CallbackContext) -> int:
             )
             return ConversationHandler.END
 
-        # Проверка типа контента
-        if not file.file_path or not any(file.file_path.lower().endswith(ext) for ext in ['.jpg', '.jpeg', '.png']):
-            logger.warning(f"Неподдерживаемый формат файла: {file.file_path}")
-            await safe_reply_text(
-                update,
-                "❌ Поддерживаются только JPG/PNG изображения.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 В начало", callback_data="back_to_start")]])
-            )
-            return ConversationHandler.END
-
         # Сохраняем данные
         context.user_data["photo_id"] = photo.file_id
         context.user_data["text"] = update.message.caption or ""
 
-        # Проверка типа заявки
-        request_type = context.user_data.get("type")
-        if request_type not in ["news", "announcement"]:
-            logger.warning(f"Некорректный тип заявки для фото: {request_type}")
-            await safe_reply_text(
-                update,
-                "❌ Фото можно прикреплять только к новостям и объявлениям.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 В начало", callback_data="back_to_start")]])
-            )
-            return ConversationHandler.END
+        # Уведомление о получении фото
+        await safe_reply_text(
+            update,
+            "⏳ Фото получено, обрабатываем...",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 В начало", callback_data="back_to_start")]])
+        )
 
         # Если есть подпись - обрабатываем, иначе запрашиваем текст
         if context.user_data["text"].strip():
-            logger.info("Фото получено с подписью, переходим к обработке")
-            return await process_announce_news_text(update, context)
+            request_type = context.user_data.get("type")
+            if request_type == "congrat":
+                return await process_congrat_text(update, context)
+            else:
+                return await process_announce_news_text(update, context)
         
-        logger.info("Фото получено без подписи, запрашиваем текст")
         await safe_reply_text(
             update,
-            "📝 Введите текст для новости/объявления:",
+            "📝 Введите текст для вашего сообщения:",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 В начало", callback_data="back_to_start")]])
         )
-        return ANNOUNCE_TEXT_INPUT
+        return CUSTOM_CONGRAT_MESSAGE_INPUT if context.user_data.get("type") == "congrat" else ANNOUNCE_TEXT_INPUT
 
-    except TelegramError as e:
-        logger.error(f"Ошибка Telegram API: {str(e)}", exc_info=True)
-        await safe_reply_text(
-            update,
-            "❌ Ошибка при загрузке фото. Попробуйте отправить снова.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 В начало", callback_data="back_to_start")]])
-        )
     except Exception as e:
-        logger.error(f"Неожиданная ошибка: {str(e)}", exc_info=True)
+        logger.error(f"Ошибка обработки фото: {str(e)}", exc_info=True)
         await safe_reply_text(
             update,
-            "⚠️ Произошла непредвиденная ошибка. Пожалуйста, попробуйте позже.",
+            "⚠️ Произошла ошибка при обработке фото. Пожалуйста, попробуйте позже.",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 В начало", callback_data="back_to_start")]])
         )
-    
-    return ConversationHandler.END
+        return ConversationHandler.END
         
 async def check_spam(update: Update, context: CallbackContext) -> bool:
     """Проверяет пользователя на спам."""
@@ -1466,6 +1439,7 @@ def setup_handlers(application: Application) -> None:
             CONGRAT_HOLIDAY_CHOICE: [CallbackQueryHandler(handle_congrat_holiday_choice)],
             CUSTOM_CONGRAT_MESSAGE_INPUT: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, process_congrat_text),
+                MessageHandler(filters.PHOTO, handle_photo_message)  # Добавлен обработчик фото
             ],
             CONGRAT_DATE_INPUT: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, process_congrat_date),
