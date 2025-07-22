@@ -60,6 +60,21 @@ MAX_CONGRAT_TEXT_LENGTH = 500
 MAX_ANNOUNCE_NEWS_TEXT_LENGTH = 300
 CHANNEL_NAME = "Небольшой Мир: Николаевск"
 
+# ========== ПРИМЕРЫ ТЕКСТОВ ==========
+EXAMPLE_TEXTS = {
+    "sender_name": "Иванов Виталий",
+    "recipient_name": "коллектив детсада 'Солнышко'",
+    "congrat": {
+        "custom": "Дорогая мама! Поздравляю с Днем рождения! Желаю здоровья и счастья!"
+    },
+    "announcement": {
+        "ride": "10.02 еду в Волгоград. 2 места. Выезд в 8:00",
+        "offer": "Продаю диван (новый). 8000₽. Фото в ЛС.",
+        "lost": "Найден ключ у магазина 'Продукты'. Опознать по брелку."
+    },
+    "news": "15.01 в нашем городе открыли новую детскую площадку!"
+}
+
 # ========== СОСТОЯНИЯ ДИАЛОГА ==========
 (
     TYPE_SELECTION,
@@ -586,26 +601,17 @@ async def handle_type_selection(update: Update, context: CallbackContext) -> int
     context.user_data["type"] = query.data
     request_type = query.data
 
-    keyboard_nav = [[InlineKeyboardButton("🔙 Вернуться в начало", callback_data="back_to_start")]]
+    keyboard = [
+        [InlineKeyboardButton("🔙 Вернуться в начало", callback_data="back_to_start")]
+    ]
 
-    if request_type == "congrat":
+    if request_type == "news":
         await safe_edit_message_text(query,
-            "Как вас зовут? (кто поздравляет, например: Иванов Виталий)",
-            reply_markup=InlineKeyboardMarkup(keyboard_nav))
-        return SENDER_NAME_INPUT
-
-    elif request_type == "announcement":
-        keyboard = [[InlineKeyboardButton(v, callback_data=k)] for k, v in ANNOUNCE_SUBTYPES.items()]
-        keyboard.extend(keyboard_nav)
-        await safe_edit_message_text(query,
-            "Выберите тип объявления:",
-            reply_markup=InlineKeyboardMarkup(keyboard))
-        return ANNOUNCE_SUBTYPE_SELECTION
-
-    elif request_type == "news":
-        await safe_edit_message_text(query,
-            f"Введите вашу новость (например: 10.01.2025 произошло....до {MAX_TEXT_LENGTH} символов):",
-            reply_markup=InlineKeyboardMarkup(keyboard_nav))
+            f"Введите вашу новость (до {MAX_TEXT_LENGTH} символов):\n"
+            f"Пример: *{EXAMPLE_TEXTS['news']}*",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="Markdown"
+        )
         return ANNOUNCE_TEXT_INPUT
         
     else:
@@ -613,39 +619,54 @@ async def handle_type_selection(update: Update, context: CallbackContext) -> int
         return ConversationHandler.END
 
 async def get_sender_name(update: Update, context: CallbackContext) -> int:
-    """Получает имя отправителя."""
+    """Получает имя отправителя с примером"""
+    keyboard = BACK_BUTTON  # Сохраняем стандартную кнопку возврата
+    
     if not update.message or not update.message.text or not update.message.text.strip():
         await safe_reply_text(update,
-            "Ошибка: пустое сообщение. Пожалуйста, введите текст.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Вернуться в начало", callback_data="back_to_start")]]))
+            "Ошибка: пустое сообщение. Пожалуйста, введите текст.\n"
+            f"Пример: *{EXAMPLE_TEXTS['sender_name']}*",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="Markdown"
+        )
         return SENDER_NAME_INPUT
 
     sender_name = update.message.text.strip()
     if not validate_name(sender_name):
         await safe_reply_text(update,
-            f"Пожалуйста, введите корректное имя (только буквы, пробелы и дефисы, от 2 до {MAX_NAME_LENGTH} символов):",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Вернуться в начало", callback_data="back_to_start")]]))
+            f"Пожалуйста, введите корректное имя (только буквы, пробелы и дефисы, от 2 до {MAX_NAME_LENGTH} символов).\n"
+            f"Пример: *{EXAMPLE_TEXTS['sender_name']}*",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="Markdown"
+        )
         return SENDER_NAME_INPUT
 
     context.user_data["from_name"] = sender_name
     await safe_reply_text(update,
-        "Кого поздравляете? Например: сестру Вику",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Вернуться в начало", callback_data="back_to_start")]]))
+        f"Кого поздравляете? Например: *{EXAMPLE_TEXTS['recipient_name']}*",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="Markdown"
+    )
     return RECIPIENT_NAME_INPUT
-
 async def get_recipient_name(update: Update, context: CallbackContext) -> int:
     """Получает имя получателя."""
     if not update.message or not update.message.text or not update.message.text.strip():
         await safe_reply_text(update,
-            "Ошибка: пустое сообщение. Пожалуйста, введите текст.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Вернуться в начало", callback_data="back_to_start")]]))
+            "Ошибка: пустое сообщение. Пожалуйста, введите текст.\n"
+            f"Пример: *{EXAMPLE_TEXTS['recipient_name']}*",
+            reply_markup=InlineKeyboardMarkup(BACK_BUTTON),
+            parse_mode="Markdown"
+        )
         return RECIPIENT_NAME_INPUT
 
     recipient_name = update.message.text.strip()
     if not validate_name(recipient_name):
         await safe_reply_text(update,
-            f"Пожалуйста, введите корректное имя (только буквы, пробелы и дефисы, от 2 до {MAX_NAME_LENGTH} символов):",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Вернуться в начало", callback_data="back_to_start")]]))
+            f"Пожалуйста, введите корректное имя (только буквы, пробелы и дефисы, от 2 до {MAX_NAME_LENGTH} символов).\n"
+            f"Пример: *сестру Викторию* или *коллектив детсада 'Солнышко'*",
+            reply_markup=InlineKeyboardMarkup(BACK_BUTTON),
+            parse_mode="Markdown"
+        )
         return RECIPIENT_NAME_INPUT
 
     context.user_data["to_name"] = recipient_name
@@ -784,7 +805,7 @@ async def handle_congrat_holiday_choice(update: Update, context: CallbackContext
     return CONGRAT_DATE_INPUT
 
 async def process_custom_congrat_message(update: Update, context: CallbackContext) -> int:
-    """Обрабатывает ввод пользовательского поздравления."""
+    """Обрабатывает ввод пользовательского поздравления с примером"""
     query = update.callback_query
     if query:
         try:
@@ -793,9 +814,18 @@ async def process_custom_congrat_message(update: Update, context: CallbackContex
             logger.warning(f"Ошибка ответа на callback: {e}")
 
     context.user_data["congrat_type"] = "custom"
+    
+    keyboard = [
+        [InlineKeyboardButton("🔙 Вернуться к выбору праздника", callback_data="back_to_holiday_choice")],
+        [InlineKeyboardButton("🔙 Вернуться в начало", callback_data="back_to_start")]
+    ]
+
     await safe_reply_text(update,
-        f"Введите текст поздравления (до {MAX_TEXT_LENGTH} символов):",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Вернуться в начало", callback_data="back_to_start")]]))
+        f"Введите текст поздравления (до {MAX_TEXT_LENGTH} символов):\n"
+        f"Пример: *{EXAMPLE_TEXTS['congrat']['custom']}*",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="Markdown"
+    )
     return CUSTOM_CONGRAT_MESSAGE_INPUT
 
 async def process_congrat_text(update: Update, context: CallbackContext) -> int:
@@ -872,7 +902,7 @@ async def back_to_holiday_choice(update: Update, context: CallbackContext) -> in
     return CONGRAT_HOLIDAY_CHOICE
 
 async def handle_announce_subtype_selection(update: Update, context: CallbackContext) -> int:
-    """Обрабатывает выбор подтипа объявления."""
+    """Обрабатывает выбор подтипа объявления с примером"""
     query = update.callback_query
     if not query or not query.data:
         return ConversationHandler.END
@@ -886,16 +916,23 @@ async def handle_announce_subtype_selection(update: Update, context: CallbackCon
     if subtype_key not in ANNOUNCE_SUBTYPES:
         await safe_edit_message_text(query,
             "Неизвестный тип объявления. Пожалуйста, начните заново.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Вернуться в начало", callback_data="back_to_start")]]))
+            reply_markup=InlineKeyboardMarkup(BACK_BUTTON))  # Добавлена закрывающая скобка
         return ConversationHandler.END
 
     context.user_data["subtype"] = subtype_key
-    subtype_name = ANNOUNCE_SUBTYPES[subtype_key]
-    context.user_data["subtype_emoji"] = subtype_name.split()[0]
+    example_text = EXAMPLE_TEXTS["announcement"][subtype_key]
+    
+    keyboard = [
+        [InlineKeyboardButton("🔙 Вернуться в начало", callback_data="back_to_start")]
+    ]
 
     await safe_edit_message_text(query,
-        f"Вы выбрали: {subtype_name}\nВведите текст объявления (до {MAX_TEXT_LENGTH} символов):",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Вернуться в начало", callback_data="back_to_start")]]))
+        f"Вы выбрали: {ANNOUNCE_SUBTYPES[subtype_key]}\n\n"
+        f"Введите текст объявления (до {MAX_TEXT_LENGTH} символов):\n"
+        f"Пример: *{example_text}*",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="Markdown"
+    )
     return ANNOUNCE_TEXT_INPUT
 
 async def process_announce_news_text(update: Update, context: CallbackContext) -> int:
