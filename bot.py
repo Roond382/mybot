@@ -888,7 +888,7 @@ async def process_congrat_text(update: Update, context: CallbackContext) -> int:
                 [InlineKeyboardButton("✅ Принять", callback_data="accept")],
                 [InlineKeyboardButton("✏️ Изменить", callback_data="edit")],
                 [InlineKeyboardButton("🔙 Вернуться в начало", callback_data="back_to_start")]
-            ))
+            ]))
         return WAIT_CENSOR_APPROVAL
 
     keyboard = [
