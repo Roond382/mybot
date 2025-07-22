@@ -590,7 +590,7 @@ async def handle_type_selection(update: Update, context: CallbackContext) -> int
 
     if request_type == "congrat":
         await safe_edit_message_text(query,
-            "Как вас зовут? (кто поздравляет, например: Внук Виталий)",
+            "Как вас зовут? (кто поздравляет, например: Иванов Виталий)",
             reply_markup=InlineKeyboardMarkup(keyboard_nav))
         return SENDER_NAME_INPUT
 
@@ -604,7 +604,7 @@ async def handle_type_selection(update: Update, context: CallbackContext) -> int
 
     elif request_type == "news":
         await safe_edit_message_text(query,
-            f"Введите вашу новость (до {MAX_TEXT_LENGTH} символов):",
+            f"Введите вашу новость (например: 10.01.2025 произошло....до {MAX_TEXT_LENGTH} символов):",
             reply_markup=InlineKeyboardMarkup(keyboard_nav))
         return ANNOUNCE_TEXT_INPUT
         
@@ -629,7 +629,7 @@ async def get_sender_name(update: Update, context: CallbackContext) -> int:
 
     context.user_data["from_name"] = sender_name
     await safe_reply_text(update,
-        "Кого поздравляете? Например: бабушку Вику",
+        "Кого поздравляете? Например: сестру Вику",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Вернуться в начало", callback_data="back_to_start")]]))
     return RECIPIENT_NAME_INPUT
 
