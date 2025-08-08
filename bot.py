@@ -17,7 +17,7 @@ from dotenv import load_dotenv
 import aiofiles
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 # Telegram Bot импорты
-from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
 from telegram.error import TelegramError
 from telegram.ext import (
     Application,
@@ -55,13 +55,13 @@ CHANNEL_NAME = "Небольшой Мир: Николаевск"
 # ========== ПРИМЕРЫ ТЕКСТОВ ==========
 EXAMPLE_TEXTS = {
     "sender_name": "Иванов Виталий",
-    "recipient_name": "коллектив детсада 'Солнышко'",
+    "recipient_name": "сестру Викторию",
     "congrat": {
         "custom": "Дорогая мама! Поздравляю с Днем рождения! Желаю здоровья и счастья!"
     },
     "announcement": {
         "ride": "10.02 еду в Волгоград. 2 места. Выезд в 8:00",
-        "demand_offer": "Ищу работу водителя. Опыт 5 лет.",
+        "offer": "Ищу работу водителя. Опыт 5 лет.",
         "lost": "Найден ключ у магазина 'Продукты'. Опознать по брелку."
     },
     "news": "15.01 в нашем городе открыли новую детскую площадку!"
@@ -80,15 +80,17 @@ EXAMPLE_TEXTS = {
     WAIT_CENSOR_APPROVAL
 ) = range(10)
 # ========== ТИПЫ ЗАПРОСОВ ==========
+# Изменены названия кнопок как в рабочем коде
 REQUEST_TYPES = {
     "congrat": {"name": "Поздравление", "icon": "🎉"},
-    "announcement": {"name": "Спрос и предложения", "icon": "📢"},
+    "announcement": {"name": "Объявление", "icon": "📢"}, # Было "Спрос и предложения"
     "news": {"name": "Новость от жителя", "icon": "🗞️"}
 }
 # ========== ПОДТИПЫ ОБЪЯВЛЕНИЙ ==========
+# Изменены подтипы как в рабочем коде
 ANNOUNCE_SUBTYPES = {
     "ride": "🚗 Попутка",
-    "demand_offer": "🤝 Спрос и предложения",
+    "offer": "💡 Предложение", # Было "demand_offer"
     "lost": "🔍 Потеряли/Нашли"
 }
 # ========== ПРАЗДНИКИ ==========
@@ -389,25 +391,47 @@ async def safe_reply_text(update: Update, text: str, **kwargs):
         except Exception as e:
             logger.error(f"Неожиданная ошибка ответа: {e}", exc_info=True)
 
+# ✅ Исправленная функция уведомления администратора с фото
 async def notify_admin_new_application(bot: Bot, app_id: int, app_details: dict):
-    """Уведомляет администратора о новой заявке."""
+    """Уведомляет администратора о новой заявке с учётом наличия фото."""
     if not ADMIN_CHAT_ID:
         return
+
     app_type = REQUEST_TYPES.get(app_details['type'], {}).get('name', 'Заявка')
     has_photo = "✅" if app_details.get('photo_id') else "❌"
     phone = f"\n• Телефон: {app_details['phone_number']}" if app_details.get('phone_number') else ""
-    text = (
+
+    caption = (
         f"📨 Новая заявка #{app_id}\n"
         f"• Тип: {app_type}\n• Фото: {has_photo}{phone}\n"
         f"• От: @{app_details.get('username') or 'N/A'} (ID: {app_details['user_id']})\n"
-        f"• Текст: {app_details['text'][:200]}...\nВыберите действие:"
+        f"• Текст: {app_details['text'][:200]}...\n\nВыберите действие:"
     )
+
     keyboard = [
         [InlineKeyboardButton("✅ Одобрить", callback_data=f"approve_{app_id}"),
          InlineKeyboardButton("❌ Отклонить", callback_data=f"reject_{app_id}")],
         [InlineKeyboardButton("👀 Посмотреть", callback_data=f"view_{app_id}")]
     ]
-    await safe_send_message(bot, ADMIN_CHAT_ID, text, reply_markup=InlineKeyboardMarkup(keyboard))
+
+    try:
+        if app_details.get('photo_id'):
+            await bot.send_photo(
+                chat_id=ADMIN_CHAT_ID,
+                photo=app_details['photo_id'],
+                caption=caption,
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+        else:
+            await bot.send_message(
+                chat_id=ADMIN_CHAT_ID,
+                text=caption,
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+    except TelegramError as e:
+        logger.warning(f"Ошибка отправки заявки админу: {e}")
+    except Exception as e:
+        logger.error(f"Неожиданная ошибка при уведомлении админа: {e}", exc_info=True)
 
 async def notify_user_about_decision(bot: Bot, app_details: dict, approved: bool):
     """Уведомляет пользователя о решении по заявке."""
@@ -508,7 +532,7 @@ async def handle_type_selection(update: Update, context: CallbackContext) -> int
     elif request_type == "congrat":
         await safe_edit_message_text(
             query,
-            "Введите ваше имя (например: *Иванов Виталий*):",
+            f"Введите ваше имя (например: *{EXAMPLE_TEXTS['sender_name']}*):",
             reply_markup=InlineKeyboardMarkup(BACK_BUTTON),
             parse_mode="Markdown"
         )
@@ -624,10 +648,12 @@ async def handle_announce_subtype_selection(update: Update, context: CallbackCon
     """Обработчик выбора подтипа объявления."""
     query = update.callback_query
     await query.answer()
+    # Исправлено на "offer" как в рабочем коде
     subtype_key = query.data.replace("subtype_", "")
     context.user_data["subtype"] = subtype_key
-    # Для "Спрос и предложения" запрашиваем телефон
-    if subtype_key == "demand_offer":
+    # Для "Предложения" запрашиваем телефон
+    # Исправлено на "offer" как в рабочем коде
+    if subtype_key == "offer":
         await safe_edit_message_text(
             query,
             "Введите ваш контактный телефон (формат: +7... или 8...):",
@@ -662,9 +688,17 @@ async def get_phone_number(update: Update, context: CallbackContext) -> int:
 
 async def process_text_and_photo(update: Update, context: CallbackContext) -> int:
     """Обрабатывает текст и/или фото."""
-    # Сохраняем фото, если есть
+    # ✅ Получаем только одно фото (предупреждение о единственном фото)
     if update.message.photo:
-        context.user_data["photo_id"] = update.message.photo[-1].file_id
+        if len(update.message.photo) > 1:
+            logger.info("Пользователь отправил несколько фото, будет обработано только одно.")
+            await safe_reply_text(
+                update,
+                "⚠️ Вы отправили несколько фото. Будет обработано только одно (с наилучшим качеством)."
+            )
+        # Получаем фото с оптимальным качеством (не самое большое)
+        photo = update.message.photo[-2] if len(update.message.photo) > 1 else update.message.photo[0]
+        context.user_data["photo_id"] = photo.file_id
     # Получаем текст из сообщения или подписи к фото
     text = update.message.text or update.message.caption
     if not text:
