@@ -193,7 +193,8 @@ def init_db():
         logger.error(f"Ошибка инициализации БД: {e}", exc_info=True)
         raise
 
-def add_application( Dict[str, Any]) -> Optional[int]:
+# ✅ Исправлена синтаксическая ошибка: добавлено имя параметра 'data'
+def add_application(data: Dict[str, Any]) -> Optional[int]:
     """Добавляет новую заявку в базу данных."""
     try:
         with get_db_connection() as conn:
