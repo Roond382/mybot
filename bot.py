@@ -62,7 +62,7 @@ EXAMPLE_TEXTS = {
         "demand_offer": "Ищу работу водителя. Опыт 5 лет.",
         "lost": "Найден ключ у магазина 'Продукты'. Опознать по брелку."
     },
-    "news": "📍 В субботу на улице Мира открылась новая детская площадка.\nПлощадка оборудована качелями, горками и теневыми навесами.\nПриходите всей семьёй!"
+    "news": "15.01 в нашем городе открыли новую детскую площадку!"
 }
 # ========== СОСТОЯНИЯ ДИАЛОГА ==========
 (
@@ -75,20 +75,18 @@ EXAMPLE_TEXTS = {
     ANNOUNCE_SUBTYPE_SELECTION,
     ANNOUNCE_TEXT_INPUT,
     PHONE_INPUT,  # Новое состояние для ввода телефона
-    WAIT_CENSOR_APPROVAL,
-    NEWS_PHONE_INPUT, # Новое состояние для ввода телефона в новости
-    NEWS_TEXT_INPUT   # Новое состояние для ввода текста/фото в новости
-) = range(12)
+    WAIT_CENSOR_APPROVAL
+) = range(10)
 # ========== ТИПЫ ЗАПРОСОВ ==========
 REQUEST_TYPES = {
     "congrat": {"name": "Поздравление", "icon": "🎉"},
-    "announcement": {"name": "Объявления", "icon": "📢"}, # Переименовано
+    "announcement": {"name": "Спрос и предложения", "icon": "📢"}, # Изменено название
     "news": {"name": "Новость от жителя", "icon": "🗞️"}
 }
 # ========== ПОДТИПЫ ОБЪЯВЛЕНИЙ ==========
 ANNOUNCE_SUBTYPES = {
     "ride": "🚗 Попутка",
-    "demand_offer": "📦 Спрос и предложения", # Переименовано и изменена иконка
+    "demand_offer": "🤝 Спрос и предложения", # Изменено название
     "lost": "🔍 Потеряли/Нашли"
 }
 # ========== ПРАЗДНИКИ ==========
@@ -398,14 +396,12 @@ async def notify_admin_new_application(bot: Bot, app_id: int, app_details: dict)
         return
 
     app_type = REQUEST_TYPES.get(app_details['type'], {}).get('name', 'Заявка')
-    subtype = ANNOUNCE_SUBTYPES.get(app_details['subtype'], '') if app_details.get('subtype') else ''
-    full_type = f"{app_type} ({subtype})" if subtype else app_type
     has_photo = "✅" if app_details.get('photo_id') else "❌"
     phone = f"\n• Телефон: {app_details['phone_number']}" if app_details.get('phone_number') else ""
 
     caption = (
         f"📨 Новая заявка #{app_id}\n"
-        f"• Тип: {full_type}\n• Фото: {has_photo}{phone}\n"
+        f"• Тип: {app_type}\n• Фото: {has_photo}{phone}\n"
         f"• От: @{app_details.get('username') or 'N/A'} (ID: {app_details['user_id']})\n"
         f"• Текст: {app_details['text'][:200]}...\n\nВыберите действие:"
     )
@@ -525,15 +521,13 @@ async def handle_type_selection(update: Update, context: CallbackContext) -> int
     request_type = query.data
     context.user_data["type"] = request_type
     if request_type == "news":
-        # Для новости сразу переходим к вводу телефона
         await safe_edit_message_text(
             query,
-            "Введите ваш контактный телефон (формат: +7... или 8...):",
+            f"Введите вашу новость (до {MAX_TEXT_LENGTH} симв.) и/или прикрепите фото:",
             reply_markup=InlineKeyboardMarkup(BACK_BUTTON)
         )
-        return NEWS_PHONE_INPUT
+        return ANNOUNCE_TEXT_INPUT
     elif request_type == "congrat":
-        # Показываем активные праздники
         keyboard = [
             [InlineKeyboardButton(holiday, callback_data=f"holiday_{holiday}")]
             for holiday in HOLIDAYS
@@ -549,7 +543,6 @@ async def handle_type_selection(update: Update, context: CallbackContext) -> int
         )
         return CONGRAT_HOLIDAY_CHOICE
     elif request_type == "announcement":
-        # Показываем подтипы объявлений
         keyboard = [
             [InlineKeyboardButton(subtype, callback_data=f"subtype_{key}")]
             for key, subtype in ANNOUNCE_SUBTYPES.items()
@@ -680,7 +673,7 @@ async def handle_announce_subtype_selection(update: Update, context: CallbackCon
     return ANNOUNCE_TEXT_INPUT
 
 async def get_phone_number(update: Update, context: CallbackContext) -> int:
-    """Получает номер телефона для объявлений."""
+    """Получает номер телефона."""
     phone = update.message.text.strip()
     if not validate_phone(phone):
         await safe_reply_text(
@@ -696,7 +689,7 @@ async def get_phone_number(update: Update, context: CallbackContext) -> int:
     return ANNOUNCE_TEXT_INPUT
 
 async def process_text_and_photo(update: Update, context: CallbackContext) -> int:
-    """Обрабатывает текст и/или фото для объявлений."""
+    """Обрабатывает текст и/или фото."""
     # ✅ Получаем только одно фото (предупреждение о единственном фото)
     if update.message.photo:
         if len(update.message.photo) > 1:
@@ -737,87 +730,8 @@ async def handle_censor_choice(update: Update, context: CallbackContext) -> int:
         return ANNOUNCE_TEXT_INPUT
     return ConversationHandler.END
 
-# ========== НОВЫЕ ОБРАБОТЧИКИ ДЛЯ НОВОСТЕЙ ==========
-async def get_news_phone_number(update: Update, context: CallbackContext) -> int:
-    """Получает номер телефона для новости."""
-    phone = update.message.text.strip()
-    if not validate_phone(phone):
-        await safe_reply_text(
-            update,
-            "Неверный формат номера. Используйте +7... или 8..."
-        )
-        return NEWS_PHONE_INPUT
-    context.user_data["phone_number"] = phone
-    await safe_reply_text(
-        update,
-        f"Теперь введите текст новости (до {MAX_TEXT_LENGTH} символов) и/или прикрепите фото.\nПример: *{EXAMPLE_TEXTS['news']}*",
-        parse_mode="Markdown"
-    )
-    return NEWS_TEXT_INPUT
-
-async def process_news_text_and_photo(update: Update, context: CallbackContext) -> int:
-    """Обрабатывает текст и/или фото для новости."""
-    # ✅ Получаем только одно фото (предупреждение о единственном фото)
-    if update.message.photo:
-        if len(update.message.photo) > 1:
-            logger.info("Пользователь отправил несколько фото, будет обработано только одно.")
-            await safe_reply_text(
-                update,
-                "⚠️ Вы отправили несколько фото. Будет обработано только одно (с наилучшим качеством)."
-            )
-        # Получаем фото с оптимальным качеством (не самое большое)
-        photo = update.message.photo[-2] if len(update.message.photo) > 1 else update.message.photo[0]
-        context.user_data["photo_id"] = photo.file_id
-    # Получаем текст из сообщения или подписи к фото
-    text = update.message.text or update.message.caption
-    if not text:
-        await safe_reply_text(update, "Пожалуйста, введите текст к вашей новости.")
-        return NEWS_TEXT_INPUT
-    text = text.strip()
-    if len(text) > MAX_TEXT_LENGTH:
-        await safe_reply_text(
-            update,
-            f"Текст слишком длинный (максимум {MAX_TEXT_LENGTH} символов)."
-        )
-        return NEWS_TEXT_INPUT
-    context.user_data["text"] = text
-    
-    # Создаем заявку
-    user = update.effective_user
-    app_data = {
-        'user_id': user.id,
-        'username': user.username,
-        'type': context.user_data['type'],
-        'text': text,
-        'photo_id': context.user_data.get('photo_id'),
-        'phone_number': context.user_data.get('phone_number'),
-        'subtype': 'news', # Указываем подтип для новости
-    }
-    app_id = add_application(app_data)
-    if app_id:
-        # Отправляем подтверждение пользователю с ссылкой на канал
-        confirmation_text = (
-            "✅ Новость принята. После модерации она будет опубликована в Telegram-канале — "
-            "<a href='https://t.me/nb_mir_nikolaevsk'>Небольшой Мир: Николаевск</a>."
-        )
-        await safe_reply_text(
-            update,
-            confirmation_text,
-            parse_mode="HTML",
-            disable_web_page_preview=True,
-            reply_markup=InlineKeyboardMarkup(BACK_BUTTON)
-        )
-    else:
-        await safe_reply_text(
-            update,
-            "❌ Произошла ошибка. Попробуйте позже.",
-            reply_markup=InlineKeyboardMarkup(BACK_BUTTON)
-        )
-    context.user_data.clear()
-    return ConversationHandler.END
-
 async def complete_request(update: Update, context: CallbackContext) -> int:
-    """Завершает создание заявки (для поздравлений и объявлений)."""
+    """Завершает создание заявки."""
     user = update.effective_user
     # Проверяем лимит заявок
     if not can_submit_request(user.id):
@@ -902,14 +816,13 @@ async def admin_view_application(update: Update, context: CallbackContext):
         return
     app_type = REQUEST_TYPES.get(app_details['type'], {}).get('name', 'Заявка')
     subtype = ANNOUNCE_SUBTYPES.get(app_details['subtype'], '') if app_details['subtype'] else ''
-    full_type = f"{app_type} ({subtype})" if subtype else app_type
     from_name = f"От: {app_details['from_name']}\n" if app_details['from_name'] else ''
     to_name = f"Кому: {app_details['to_name']}\n" if app_details['to_name'] else ''
     phone = f"Телефон: {app_details['phone_number']}\n" if app_details['phone_number'] else ''
     publish_date = f"Дата публикации: {app_details['publish_date']}\n" if app_details['publish_date'] else ''
     text = (
         f"📝 Детали заявки #{app_id}\n"
-        f"Тип: {full_type}\n"
+        f"Тип: {app_type} {subtype}\n"
         f"{from_name}{to_name}{phone}{publish_date}"
         f"Текст: {app_details['text']}\n"
         f"Пользователь: @{app_details.get('username', 'N/A')} (ID: {app_details['user_id']})\n"
@@ -974,9 +887,9 @@ async def help_command(update: Update, context: CallbackContext) -> None:
         "Этот бот предназначен для отправки заявок в группу *Небольшой Мир: Николаевск*.\n\n"
         "📌 *Как использовать:*\n"
         "1. Нажмите /start.\n"
-        "2. Выберите тип заявки: Поздравление, Объявления или Новость от жителя.\n"
+        "2. Выберите тип заявки: Поздравление, Спрос и предложения или Новость от жителя.\n"
         "3. Следуйте инструкциям бота.\n"
-        "4. Ваша заявка будет отправлена на модерацию (кроме новостей).\n\n"
+        "4. Ваша заявка будет отправлена на модерацию.\n\n"
         "Если у вас есть вопросы, обратитесь к администратору группы."
     )
     await safe_reply_text(update, help_text, parse_mode="Markdown")
@@ -1044,13 +957,6 @@ async def setup_telegram_application():
                     ],
                     ANNOUNCE_TEXT_INPUT: [
                         MessageHandler(filters.TEXT | filters.PHOTO & ~filters.COMMAND, process_text_and_photo)
-                    ],
-                    # Новые состояния для новостей
-                    NEWS_PHONE_INPUT: [
-                        MessageHandler(filters.TEXT & ~filters.COMMAND, get_news_phone_number)
-                    ],
-                    NEWS_TEXT_INPUT: [
-                        MessageHandler(filters.TEXT | filters.PHOTO & ~filters.COMMAND, process_news_text_and_photo)
                     ],
                     WAIT_CENSOR_APPROVAL: [
                         CallbackQueryHandler(handle_censor_choice, pattern="^(accept_censor|edit_censor)$"),
