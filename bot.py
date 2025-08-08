@@ -4,7 +4,6 @@ import logging
 import sqlite3
 import re
 import asyncio
-import secrets
 from datetime import datetime, timedelta
 from typing import Dict, Any, Optional, Tuple, List
 # FastAPI импорты
@@ -40,7 +39,7 @@ WEBHOOK_SECRET = os.getenv('WEBHOOK_SECRET')
 CHANNEL_ID = int(os.getenv('CHANNEL_ID')) if os.getenv('CHANNEL_ID') else None
 ADMIN_CHAT_ID = int(os.getenv('ADMIN_CHAT_ID')) if os.getenv('ADMIN_CHAT_ID') else None
 TIMEZONE = pytz.timezone('Europe/Moscow')
-WORKING_HOURS = (0, 23)
+WORKING_HOURS = (9, 21) # Рабочее время с 9:00 до 21:00
 WORK_ON_WEEKENDS = True
 # ========== КОНСТАНТЫ ==========
 BACK_BUTTON = [[InlineKeyboardButton("🔙 Вернуться в начало", callback_data="back_to_start")]]
@@ -50,12 +49,11 @@ DEFAULT_BAD_WORDS = ["хуй", "пизда", "блять", "блядь", "еба
 MAX_NAME_LENGTH = 50
 MAX_TEXT_LENGTH = 4000
 MAX_CONGRAT_TEXT_LENGTH = 500
-MAX_ANNOUNCE_NEWS_TEXT_LENGTH = 300
 CHANNEL_NAME = "Небольшой Мир: Николаевск"
 # ========== ПРИМЕРЫ ТЕКСТОВ ==========
 EXAMPLE_TEXTS = {
     "sender_name": "Иванов Виталий",
-    "recipient_name": "коллектив детсада 'Солнышко'",
+    "recipient_name": "сестру Викторию",
     "congrat": {
         "custom": "Дорогая мама! Поздравляю с Днем рождения! Желаю здоровья и счастья!"
     },
@@ -64,7 +62,7 @@ EXAMPLE_TEXTS = {
         "demand_offer": "Ищу работу водителя. Опыт 5 лет.",
         "lost": "Найден ключ у магазина 'Продукты'. Опознать по брелку."
     },
-    "news": "15.01 в нашем городе открыли новую детскую площадку!"
+    "news": "📍 В субботу на улице Мира открылась новая детская площадка.\nПлощадка оборудована качелями, горками и теневыми навесами.\nПриходите всей семьёй!"
 }
 # ========== СОСТОЯНИЯ ДИАЛОГА ==========
 (
@@ -77,18 +75,20 @@ EXAMPLE_TEXTS = {
     ANNOUNCE_SUBTYPE_SELECTION,
     ANNOUNCE_TEXT_INPUT,
     PHONE_INPUT,  # Новое состояние для ввода телефона
-    WAIT_CENSOR_APPROVAL
-) = range(10)
+    WAIT_CENSOR_APPROVAL,
+    NEWS_PHONE_INPUT, # Новое состояние для ввода телефона в новости
+    NEWS_TEXT_INPUT   # Новое состояние для ввода текста/фото в новости
+) = range(12)
 # ========== ТИПЫ ЗАПРОСОВ ==========
 REQUEST_TYPES = {
     "congrat": {"name": "Поздравление", "icon": "🎉"},
-    "announcement": {"name": "Спрос и предложения", "icon": "📢"},
+    "announcement": {"name": "Объявления", "icon": "📢"}, # Переименовано
     "news": {"name": "Новость от жителя", "icon": "🗞️"}
 }
 # ========== ПОДТИПЫ ОБЪЯВЛЕНИЙ ==========
 ANNOUNCE_SUBTYPES = {
     "ride": "🚗 Попутка",
-    "demand_offer": "🤝 Спрос и предложения",
+    "demand_offer": "📦 Спрос и предложения", # Переименовано и изменена иконка
     "lost": "🔍 Потеряли/Нашли"
 }
 # ========== ПРАЗДНИКИ ==========
@@ -195,6 +195,7 @@ def init_db():
         logger.error(f"Ошибка инициализации БД: {e}", exc_info=True)
         raise
 
+# ✅ Исправлена синтаксическая ошибка: добавлено имя параметра 'data'
 def add_application(data: Dict[str, Any]) -> Optional[int]:
     """Добавляет новую заявку в базу данных."""
     try:
@@ -321,7 +322,8 @@ def validate_phone(phone: str) -> bool:
 def is_holiday_active(holiday_date_str: str) -> bool:
     """Проверяет, активен ли праздник (в пределах 5 дней)."""
     try:
-        holiday_date = datetime.strptime(f"{datetime.now().year}-{holiday_date_str}", "%Y-%m-%d").date()
+        current_year = datetime.now().year
+        holiday_date = datetime.strptime(f"{current_year}-{holiday_date_str}", "%Y-%m-%d").date()
         today = datetime.now().date()
         return (holiday_date - timedelta(days=5)) <= today <= (holiday_date + timedelta(days=5))
     except ValueError:
@@ -389,25 +391,49 @@ async def safe_reply_text(update: Update, text: str, **kwargs):
         except Exception as e:
             logger.error(f"Неожиданная ошибка ответа: {e}", exc_info=True)
 
+# ✅ Исправленная функция уведомления администратора с фото
 async def notify_admin_new_application(bot: Bot, app_id: int, app_details: dict):
-    """Уведомляет администратора о новой заявке."""
+    """Уведомляет администратора о новой заявке с учётом наличия фото."""
     if not ADMIN_CHAT_ID:
         return
+
     app_type = REQUEST_TYPES.get(app_details['type'], {}).get('name', 'Заявка')
+    subtype = ANNOUNCE_SUBTYPES.get(app_details['subtype'], '') if app_details.get('subtype') else ''
+    full_type = f"{app_type} ({subtype})" if subtype else app_type
     has_photo = "✅" if app_details.get('photo_id') else "❌"
     phone = f"\n• Телефон: {app_details['phone_number']}" if app_details.get('phone_number') else ""
-    text = (
+
+    caption = (
         f"📨 Новая заявка #{app_id}\n"
-        f"• Тип: {app_type}\n• Фото: {has_photo}{phone}\n"
+        f"• Тип: {full_type}\n• Фото: {has_photo}{phone}\n"
         f"• От: @{app_details.get('username') or 'N/A'} (ID: {app_details['user_id']})\n"
-        f"• Текст: {app_details['text'][:200]}...\nВыберите действие:"
+        f"• Текст: {app_details['text'][:200]}...\n\nВыберите действие:"
     )
+
     keyboard = [
         [InlineKeyboardButton("✅ Одобрить", callback_data=f"approve_{app_id}"),
          InlineKeyboardButton("❌ Отклонить", callback_data=f"reject_{app_id}")],
         [InlineKeyboardButton("👀 Посмотреть", callback_data=f"view_{app_id}")]
     ]
-    await safe_send_message(bot, ADMIN_CHAT_ID, text, reply_markup=InlineKeyboardMarkup(keyboard))
+
+    try:
+        if app_details.get('photo_id'):
+            await bot.send_photo(
+                chat_id=ADMIN_CHAT_ID,
+                photo=app_details['photo_id'],
+                caption=caption,
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+        else:
+            await bot.send_message(
+                chat_id=ADMIN_CHAT_ID,
+                text=caption,
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+    except TelegramError as e:
+        logger.warning(f"Ошибка отправки заявки админу: {e}")
+    except Exception as e:
+        logger.error(f"Неожиданная ошибка при уведомлении админа: {e}", exc_info=True)
 
 async def notify_user_about_decision(bot: Bot, app_details: dict, approved: bool):
     """Уведомляет пользователя о решении по заявке."""
@@ -499,21 +525,31 @@ async def handle_type_selection(update: Update, context: CallbackContext) -> int
     request_type = query.data
     context.user_data["type"] = request_type
     if request_type == "news":
+        # Для новости сразу переходим к вводу телефона
         await safe_edit_message_text(
             query,
-            f"Введите вашу новость (до {MAX_TEXT_LENGTH} симв.) и/или прикрепите фото:",
+            "Введите ваш контактный телефон (формат: +7... или 8...):",
             reply_markup=InlineKeyboardMarkup(BACK_BUTTON)
         )
-        return ANNOUNCE_TEXT_INPUT
+        return NEWS_PHONE_INPUT
     elif request_type == "congrat":
+        # Показываем активные праздники
+        keyboard = [
+            [InlineKeyboardButton(holiday, callback_data=f"holiday_{holiday}")]
+            for holiday in HOLIDAYS
+            if is_holiday_active(HOLIDAYS[holiday])
+        ] + [
+            [InlineKeyboardButton("🎂 Свой праздник", callback_data="custom_congrat")],
+            [InlineKeyboardButton("🔙 Вернуться в начало", callback_data="back_to_start")]
+        ]
         await safe_edit_message_text(
             query,
-            "Введите ваше имя (например: *Иванов Виталий*):",
-            reply_markup=InlineKeyboardMarkup(BACK_BUTTON),
-            parse_mode="Markdown"
+            "Выберите праздник для поздравления:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
         )
-        return SENDER_NAME_INPUT
+        return CONGRAT_HOLIDAY_CHOICE
     elif request_type == "announcement":
+        # Показываем подтипы объявлений
         keyboard = [
             [InlineKeyboardButton(subtype, callback_data=f"subtype_{key}")]
             for key, subtype in ANNOUNCE_SUBTYPES.items()
@@ -558,14 +594,13 @@ async def get_recipient_name(update: Update, context: CallbackContext) -> int:
         [InlineKeyboardButton(holiday, callback_data=f"holiday_{holiday}")]
         for holiday in HOLIDAYS
         if is_holiday_active(HOLIDAYS[holiday])
-    ]
-    keyboard += [
-        [InlineKeyboardButton("🎂 Свой праздник (указать дату)", callback_data="custom_congrat")],
-        [InlineKeyboardButton("🔙 В начало", callback_data="back_to_start")]
+    ] + [
+        [InlineKeyboardButton("🎂 Свой праздник", callback_data="custom_congrat")],
+        [InlineKeyboardButton("🔙 Вернуться в начало", callback_data="back_to_start")]
     ]
     await safe_reply_text(
         update,
-        "Выберите праздник или свой вариант:",
+        "Выберите праздник для поздравления:",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
     return CONGRAT_HOLIDAY_CHOICE
@@ -645,7 +680,7 @@ async def handle_announce_subtype_selection(update: Update, context: CallbackCon
     return ANNOUNCE_TEXT_INPUT
 
 async def get_phone_number(update: Update, context: CallbackContext) -> int:
-    """Получает номер телефона."""
+    """Получает номер телефона для объявлений."""
     phone = update.message.text.strip()
     if not validate_phone(phone):
         await safe_reply_text(
@@ -661,10 +696,18 @@ async def get_phone_number(update: Update, context: CallbackContext) -> int:
     return ANNOUNCE_TEXT_INPUT
 
 async def process_text_and_photo(update: Update, context: CallbackContext) -> int:
-    """Обрабатывает текст и/или фото."""
-    # Сохраняем фото, если есть
+    """Обрабатывает текст и/или фото для объявлений."""
+    # ✅ Получаем только одно фото (предупреждение о единственном фото)
     if update.message.photo:
-        context.user_data["photo_id"] = update.message.photo[-1].file_id
+        if len(update.message.photo) > 1:
+            logger.info("Пользователь отправил несколько фото, будет обработано только одно.")
+            await safe_reply_text(
+                update,
+                "⚠️ Вы отправили несколько фото. Будет обработано только одно (с наилучшим качеством)."
+            )
+        # Получаем фото с оптимальным качеством (не самое большое)
+        photo = update.message.photo[-2] if len(update.message.photo) > 1 else update.message.photo[0]
+        context.user_data["photo_id"] = photo.file_id
     # Получаем текст из сообщения или подписи к фото
     text = update.message.text or update.message.caption
     if not text:
@@ -694,8 +737,87 @@ async def handle_censor_choice(update: Update, context: CallbackContext) -> int:
         return ANNOUNCE_TEXT_INPUT
     return ConversationHandler.END
 
+# ========== НОВЫЕ ОБРАБОТЧИКИ ДЛЯ НОВОСТЕЙ ==========
+async def get_news_phone_number(update: Update, context: CallbackContext) -> int:
+    """Получает номер телефона для новости."""
+    phone = update.message.text.strip()
+    if not validate_phone(phone):
+        await safe_reply_text(
+            update,
+            "Неверный формат номера. Используйте +7... или 8..."
+        )
+        return NEWS_PHONE_INPUT
+    context.user_data["phone_number"] = phone
+    await safe_reply_text(
+        update,
+        f"Теперь введите текст новости (до {MAX_TEXT_LENGTH} символов) и/или прикрепите фото.\nПример: *{EXAMPLE_TEXTS['news']}*",
+        parse_mode="Markdown"
+    )
+    return NEWS_TEXT_INPUT
+
+async def process_news_text_and_photo(update: Update, context: CallbackContext) -> int:
+    """Обрабатывает текст и/или фото для новости."""
+    # ✅ Получаем только одно фото (предупреждение о единственном фото)
+    if update.message.photo:
+        if len(update.message.photo) > 1:
+            logger.info("Пользователь отправил несколько фото, будет обработано только одно.")
+            await safe_reply_text(
+                update,
+                "⚠️ Вы отправили несколько фото. Будет обработано только одно (с наилучшим качеством)."
+            )
+        # Получаем фото с оптимальным качеством (не самое большое)
+        photo = update.message.photo[-2] if len(update.message.photo) > 1 else update.message.photo[0]
+        context.user_data["photo_id"] = photo.file_id
+    # Получаем текст из сообщения или подписи к фото
+    text = update.message.text or update.message.caption
+    if not text:
+        await safe_reply_text(update, "Пожалуйста, введите текст к вашей новости.")
+        return NEWS_TEXT_INPUT
+    text = text.strip()
+    if len(text) > MAX_TEXT_LENGTH:
+        await safe_reply_text(
+            update,
+            f"Текст слишком длинный (максимум {MAX_TEXT_LENGTH} символов)."
+        )
+        return NEWS_TEXT_INPUT
+    context.user_data["text"] = text
+    
+    # Создаем заявку
+    user = update.effective_user
+    app_data = {
+        'user_id': user.id,
+        'username': user.username,
+        'type': context.user_data['type'],
+        'text': text,
+        'photo_id': context.user_data.get('photo_id'),
+        'phone_number': context.user_data.get('phone_number'),
+        'subtype': 'news', # Указываем подтип для новости
+    }
+    app_id = add_application(app_data)
+    if app_id:
+        # Отправляем подтверждение пользователю с ссылкой на канал
+        confirmation_text = (
+            "✅ Новость принята. После модерации она будет опубликована в Telegram-канале — "
+            "<a href='https://t.me/nb_mir_nikolaevsk'>Небольшой Мир: Николаевск</a>."
+        )
+        await safe_reply_text(
+            update,
+            confirmation_text,
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+            reply_markup=InlineKeyboardMarkup(BACK_BUTTON)
+        )
+    else:
+        await safe_reply_text(
+            update,
+            "❌ Произошла ошибка. Попробуйте позже.",
+            reply_markup=InlineKeyboardMarkup(BACK_BUTTON)
+        )
+    context.user_data.clear()
+    return ConversationHandler.END
+
 async def complete_request(update: Update, context: CallbackContext) -> int:
-    """Завершает создание заявки."""
+    """Завершает создание заявки (для поздравлений и объявлений)."""
     user = update.effective_user
     # Проверяем лимит заявок
     if not can_submit_request(user.id):
@@ -780,13 +902,14 @@ async def admin_view_application(update: Update, context: CallbackContext):
         return
     app_type = REQUEST_TYPES.get(app_details['type'], {}).get('name', 'Заявка')
     subtype = ANNOUNCE_SUBTYPES.get(app_details['subtype'], '') if app_details['subtype'] else ''
+    full_type = f"{app_type} ({subtype})" if subtype else app_type
     from_name = f"От: {app_details['from_name']}\n" if app_details['from_name'] else ''
     to_name = f"Кому: {app_details['to_name']}\n" if app_details['to_name'] else ''
     phone = f"Телефон: {app_details['phone_number']}\n" if app_details['phone_number'] else ''
     publish_date = f"Дата публикации: {app_details['publish_date']}\n" if app_details['publish_date'] else ''
     text = (
         f"📝 Детали заявки #{app_id}\n"
-        f"Тип: {app_type} {subtype}\n"
+        f"Тип: {full_type}\n"
         f"{from_name}{to_name}{phone}{publish_date}"
         f"Текст: {app_details['text']}\n"
         f"Пользователь: @{app_details.get('username', 'N/A')} (ID: {app_details['user_id']})\n"
@@ -843,6 +966,40 @@ async def admin_reject_application(update: Update, context: CallbackContext):
     else:
         await safe_edit_message_text(query, f"Ошибка отклонения заявки #{app_id}.")
 
+# ========== ДОПОЛНИТЕЛЬНЫЕ КОМАНДЫ ==========
+async def help_command(update: Update, context: CallbackContext) -> None:
+    """Обработчик команды /help."""
+    help_text = (
+        "ℹ️ *Помощь по боту*\n\n"
+        "Этот бот предназначен для отправки заявок в группу *Небольшой Мир: Николаевск*.\n\n"
+        "📌 *Как использовать:*\n"
+        "1. Нажмите /start.\n"
+        "2. Выберите тип заявки: Поздравление, Объявления или Новость от жителя.\n"
+        "3. Следуйте инструкциям бота.\n"
+        "4. Ваша заявка будет отправлена на модерацию (кроме новостей).\n\n"
+        "Если у вас есть вопросы, обратитесь к администратору группы."
+    )
+    await safe_reply_text(update, help_text, parse_mode="Markdown")
+
+async def send_bot_status(bot: Bot) -> bool:
+    """Отправляет статус бота админу."""
+    if not ADMIN_CHAT_ID:
+        logger.warning("ID админа не задан — уведомление не отправлено.")
+        return False
+    try:
+        current_time = datetime.now(TIMEZONE)
+        message = (
+            f"🤖 *Статус бота*\n"
+            f"• Время: {current_time.strftime('%H:%M %d.%m.%Y')}\n"
+            f"• Рабочее время: {'Да' if is_working_hours() else 'Нет'}\n"
+            f"• Uptime: {get_uptime()}"
+        )
+        sent = await bot.send_message(chat_id=ADMIN_CHAT_ID, text=message, disable_notification=True)
+        return sent is not None
+    except Exception as e:
+        logger.error(f"Не удалось отправить статус админу: {e}")
+        return False
+
 # ========== НАСТРОЙКА ПРИЛОЖЕНИЯ ==========
 async def setup_telegram_application():
     """Настраивает Telegram приложение."""
@@ -888,6 +1045,13 @@ async def setup_telegram_application():
                     ANNOUNCE_TEXT_INPUT: [
                         MessageHandler(filters.TEXT | filters.PHOTO & ~filters.COMMAND, process_text_and_photo)
                     ],
+                    # Новые состояния для новостей
+                    NEWS_PHONE_INPUT: [
+                        MessageHandler(filters.TEXT & ~filters.COMMAND, get_news_phone_number)
+                    ],
+                    NEWS_TEXT_INPUT: [
+                        MessageHandler(filters.TEXT | filters.PHOTO & ~filters.COMMAND, process_news_text_and_photo)
+                    ],
                     WAIT_CENSOR_APPROVAL: [
                         CallbackQueryHandler(handle_censor_choice, pattern="^(accept_censor|edit_censor)$"),
                         MessageHandler(filters.TEXT & ~filters.COMMAND, process_text_and_photo)
@@ -904,6 +1068,8 @@ async def setup_telegram_application():
             application.add_handler(CallbackQueryHandler(admin_approve_application, pattern="^approve_\\d+$"))
             application.add_handler(CallbackQueryHandler(admin_reject_application, pattern="^reject_\\d+$"))
             application.add_handler(CallbackQueryHandler(admin_view_application, pattern="^view_\\d+$"))
+            # Дополнительные команды
+            application.add_handler(CommandHandler("help", help_command))
             await application.initialize()
             # Установка вебхука
             if WEBHOOK_URL and TOKEN:
@@ -920,7 +1086,9 @@ async def setup_telegram_application():
             logger.info("Планировщик запущен.")
             BOT_STATE['start_time'] = datetime.now(TIMEZONE)
             BOT_STATE['running'] = True
-            logger.info("Telegram Application setup complete. Уведомление администратору отключено.")
+            # Отправляем статус админу при запуске
+            await send_bot_status(application.bot)
+            logger.info("Telegram Application setup complete.")
         except Exception as e:
             logger.critical("Критическая ошибка при инициализации Telegram Application.", exc_info=True)
             application = None # Сбрасываем, если инициализация не удалась
@@ -981,7 +1149,8 @@ async def status():
     return {
         "status": "running",
         "uptime": get_uptime(),
-        "bot_initialized": application is not None
+        "bot_initialized": application is not None,
+        "is_working_hours": is_working_hours()
     }
 
 @app.get("/")
