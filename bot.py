@@ -438,7 +438,7 @@ async def publish_to_channel(app_id: int, bot: Bot) -> bool:
         logger.error(f"Ошибка публикации: {str(e)}")
         return False
 
-async def check_pending_applications(context: CallbackContext) -> None:
+async def check_pending_applications(bot: Bot) -> None:
     """Проверяет и публикует одобренные заявки."""
     try:
         applications = get_approved_unpublished_applications()
@@ -1189,7 +1189,7 @@ async def setup_scheduler(bot_app: Application) -> AsyncIOScheduler:
         check_pending_applications,
         'interval',
         minutes=5,
-        args=[bot_app.create_context()],
+        args=[bot_app.bot],
         id='check_applications'
     )
     
