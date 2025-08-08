@@ -933,15 +933,15 @@ async def admin_reject_application(update: Update, context: CallbackContext):
 async def setup_telegram_application():
     """Настраивает Telegram приложение."""
     global application
-    
+
     if application is not None:
         return
-    
+
     application = Application.builder().token(TOKEN).build()
-    
+
     # Инициализация БД
     init_db()
-    
+
     # Диалог для создания заявки
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start_command)],
@@ -984,14 +984,16 @@ async def setup_telegram_application():
         ],
         allow_reentry=True
     )
-    
+
     application.add_handler(conv_handler)
-    
+
     # Админские коллбэки
-    application.add_handler(CallbackQueryHandler(admin_approve_application, pattern="^approve_\d+$"))
-    application.add_handler(CallbackQueryHandler(admin_reject_application, pattern="^reject_\d+$"))
-    application.add_handler(CallbackQueryHandler(admin_view_application, pattern="^view_\d+$"))
-    
+    application.add_handler(CallbackQueryHandler(admin_approve_application, pattern="^approve_\\d+$"))
+    application.add_handler(CallbackQueryHandler(admin_reject_application, pattern="^reject_\\d+$"))
+    application.add_handler(CallbackQueryHandler(admin_view_application, pattern="^view_\\d+$"))
+
+    await application.initialize()
+
     # Установка вебхука
     if WEBHOOK_URL and TOKEN:
         webhook_url = f"{WEBHOOK_URL}/telegram-webhook/{WEBHOOK_SECRET}"
@@ -999,38 +1001,30 @@ async def setup_telegram_application():
         logger.info(f"Вебхук установлен: {webhook_url}")
     else:
         logger.warning("WEBHOOK_URL или TELEGRAM_TOKEN не заданы. Вебхук не будет установлен.")
-    
+
     # Запуск планировщика
     scheduler = AsyncIOScheduler(timezone=TIMEZONE)
     scheduler.add_job(check_pending_applications, 'interval', minutes=1, args=[application])
     scheduler.add_job(cleanup_old_applications, 'cron', hour=3, minute=0)
     scheduler.start()
     logger.info("Планировщик запущен.")
-    
-    # ОТКЛЮЧЕНО: Уведомление администратора о запуске бота
-    # Как было запрошено пользователем
+
     BOT_STATE['start_time'] = datetime.now(TIMEZONE)
     BOT_STATE['running'] = True
     logger.info("Telegram Application setup complete. Уведомление администратору отключено.")
 
-# ========== МАРШРУТЫ FASTAPI ==========
-@app.on_event("startup")
-async def startup_event():
-    """Событие запуска FastAPI."""
-    logger.info("Запуск FastAPI сервера...")
-    await setup_telegram_application()
-    logger.info("FastAPI сервер запущен.")
 
+# ========== МАРШРУТЫ FASTAPI ==========
 @app.post("/telegram-webhook/{secret}")
 async def telegram_webhook(secret: str, request: Request):
     """Обработчик вебхука Telegram."""
     if secret != WEBHOOK_SECRET:
         raise HTTPException(status_code=403, detail="Invalid secret")
-    
+
     if application is None:
         logger.error("Telegram Application не инициализирован.")
         raise HTTPException(status_code=500, detail="Bot not initialized")
-    
+
     try:
         update = Update.de_json(await request.json(), application.bot)
         await application.process_update(update)
