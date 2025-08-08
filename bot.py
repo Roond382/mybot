@@ -20,7 +20,7 @@ import aiofiles
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 # Telegram Bot импорты
-from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
 from telegram.error import TelegramError
 from telegram.ext import (
     Application,
@@ -116,13 +116,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-application: Optional[Application] = None
+application = None
 
 # ========== ГЛОБАЛЬНОЕ СОСТОЯНИЕ БОТА ==========
 BOT_STATE = {'running': False, 'start_time': None}
 
 # ========== БАЗА ДАННЫХ ==========
-def get_db_connection() -> sqlite3.Connection:
+def get_db_connection():
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
@@ -148,7 +148,7 @@ def init_db():
         logger.error(f"Ошибка инициализации БД: {e}", exc_info=True)
         raise
 
-def add_application(data: Dict[str, Any]) -> Optional[int]:
+def add_application(data: Dict[str, Any]):
     try:
         with get_db_connection() as conn:
             cur = conn.cursor()
@@ -168,7 +168,7 @@ def add_application(data: Dict[str, Any]) -> Optional[int]:
         logger.error(f"Ошибка добавления заявки: {e}\nДанные: {data}", exc_info=True)
         return None
 
-def get_application_details(app_id: int) -> Optional[sqlite3.Row]:
+def get_application_details(app_id: int):
     try:
         with get_db_connection() as conn:
             return conn.execute("SELECT * FROM applications WHERE id = ?", (app_id,)).fetchone()
@@ -176,7 +176,7 @@ def get_application_details(app_id: int) -> Optional[sqlite3.Row]:
         logger.error(f"Ошибка получения заявки #{app_id}: {e}", exc_info=True)
         return None
 
-def get_approved_unpublished_applications() -> list:
+def get_approved_unpublished_applications():
     try:
         with get_db_connection() as conn:
             return conn.execute("SELECT * FROM applications WHERE status = 'approved' AND published_at IS NULL").fetchall()
@@ -184,7 +184,7 @@ def get_approved_unpublished_applications() -> list:
         logger.error(f"Ошибка получения заявок: {e}", exc_info=True)
         return []
 
-def update_application_status(app_id: int, status: str) -> bool:
+def update_application_status(app_id: int, status: str):
     try:
         with get_db_connection() as conn:
             conn.execute("UPDATE applications SET status = ? WHERE id = ?", (status, app_id))
@@ -194,7 +194,7 @@ def update_application_status(app_id: int, status: str) -> bool:
         logger.error(f"Ошибка обновления статуса заявки #{app_id}: {e}", exc_info=True)
         return False
 
-def mark_application_as_published(app_id: int) -> bool:
+def mark_application_as_published(app_id: int):
     try:
         with get_db_connection() as conn:
             conn.execute("UPDATE applications SET published_at = CURRENT_TIMESTAMP, status = 'published' WHERE id = ?", (app_id,))
@@ -214,7 +214,7 @@ def cleanup_old_applications(days: int = 30):
         logger.error(f"Ошибка очистки БД: {e}", exc_info=True)
 
 # ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
-async def load_bad_words() -> List[str]:
+async def load_bad_words():
     try:
         async with aiofiles.open(BAD_WORDS_FILE, 'r', encoding='utf-8') as f:
             content = await f.read()
@@ -225,7 +225,7 @@ async def load_bad_words() -> List[str]:
         logger.error(f"Ошибка загрузки запрещенных слов: {e}", exc_info=True)
         return DEFAULT_BAD_WORDS
 
-async def censor_text(text: str) -> Tuple[str, bool]:
+async def censor_text(text: str):
     bad_words = await load_bad_words()
     censored = text
     has_bad = any(re.search(re.escape(word), censored, re.IGNORECASE) for word in bad_words)
@@ -240,7 +240,7 @@ async def safe_send_message(bot: Bot, chat_id: int, text: str, **kwargs):
     except TelegramError as e:
         logger.warning(f"Ошибка отправки сообщения в {chat_id}: {e}")
 
-async def safe_edit_message_text(query: Optional[Update.callback_query], text: str, **kwargs):
+async def safe_edit_message_text(query, text: str, **kwargs):
     if query and query.message:
         try:
             await query.edit_message_text(text=text, **kwargs)
@@ -254,28 +254,30 @@ async def safe_reply_text(update: Update, text: str, **kwargs):
     elif update.message:
         await update.message.reply_text(text=text, **kwargs)
 
-def get_uptime() -> str:
-    if not BOT_STATE.get('start_time'): return "N/A"
+def get_uptime():
+    if not BOT_STATE.get('start_time'): 
+        return "N/A"
     uptime = datetime.now(TIMEZONE) - BOT_STATE['start_time']
     days, rem = divmod(uptime.total_seconds(), 86400)
     hours, rem = divmod(rem, 3600)
     minutes, _ = divmod(rem, 60)
     return f"{int(days)}д {int(hours)}ч {int(minutes)}м"
 
-def validate_name(name: str) -> bool:
+def validate_name(name: str):
     return 2 <= len(name) <= MAX_NAME_LENGTH and bool(re.match(r'^[a-zA-Zа-яА-ЯёЁ\s\-]+$', name))
 
-def validate_phone(phone: str) -> bool:
+def validate_phone(phone: str):
     clean_phone = re.sub(r'[^\d+]', '', phone)
     return bool(re.match(r'^(\+7|8)\d{10}$', clean_phone))
 
-def is_holiday_active(holiday_date_str: str) -> bool:
+def is_holiday_active(holiday_date_str: str):
     holiday_date = datetime.strptime(f"{datetime.now().year}-{holiday_date_str}", "%Y-%m-%d").date()
     today = datetime.now().date()
     return (holiday_date - timedelta(days=5)) <= today <= (holiday_date + timedelta(days=5))
 
 async def notify_admin_new_application(bot: Bot, app_id: int, app_details: dict):
-    if not ADMIN_CHAT_ID: return
+    if not ADMIN_CHAT_ID: 
+        return
     app_type = REQUEST_TYPES.get(app_details['type'], {}).get('name', 'Заявка')
     has_photo = "✅" if app_details.get('photo_id') else "❌"
     phone = f"\n• Телефон: {app_details['phone_number']}" if app_details.get('phone_number') else ""
@@ -298,7 +300,7 @@ async def notify_user_about_decision(bot: Bot, app_details: dict, approved: bool
     text = f"{icon} Ваша заявка на «{app_type}» была {status}."
     await safe_send_message(bot, user_id, text)
 
-def can_submit_request(user_id: int) -> bool:
+def can_submit_request(user_id: int):
     try:
         with get_db_connection() as conn:
             count = conn.execute("SELECT COUNT(*) FROM applications WHERE user_id = ? AND created_at > datetime('now', '-1 hour')", (user_id,)).fetchone()[0]
@@ -308,10 +310,12 @@ def can_submit_request(user_id: int) -> bool:
         return True
 
 # ========== ПУБЛИКАЦИЯ И ПЛАНИРОВЩИК ==========
-async def publish_to_channel(app_id: int, bot: Bot) -> bool:
-    if not CHANNEL_ID: return False
+async def publish_to_channel(app_id: int, bot: Bot):
+    if not CHANNEL_ID: 
+        return False
     app_details = get_application_details(app_id)
-    if not app_details: return False
+    if not app_details: 
+        return False
 
     text = app_details['text']
     photo_id = app_details['photo_id']
@@ -351,13 +355,13 @@ async def check_pending_applications(context: CallbackContext):
         logger.error(f"Ошибка проверки заявок: {e}")
 
 # ========== ОБРАБОТЧИКИ ДИАЛОГА ==========
-async def start_command(update: Update, context: CallbackContext) -> int:
+async def start_command(update: Update, context: CallbackContext):
     context.user_data.clear()
     keyboard = [[InlineKeyboardButton(f"{info['icon']} {info['name']}", callback_data=key)] for key, info in REQUEST_TYPES.items()]
     await safe_reply_text(update, "Здравствуйте! Выберите тип заявки:", reply_markup=InlineKeyboardMarkup(keyboard))
     return TYPE_SELECTION
 
-async def handle_type_selection(update: Update, context: CallbackContext) -> int:
+async def handle_type_selection(update: Update, context: CallbackContext):
     query = update.callback_query
     await query.answer()
     request_type = query.data
@@ -375,7 +379,7 @@ async def handle_type_selection(update: Update, context: CallbackContext) -> int
         return ANNOUNCE_SUBTYPE_SELECTION
     return ConversationHandler.END
 
-async def get_sender_name(update: Update, context: CallbackContext) -> int:
+async def get_sender_name(update: Update, context: CallbackContext):
     sender_name = update.message.text.strip()
     if not validate_name(sender_name):
         await safe_reply_text(update, f"Пожалуйста, введите корректное имя (от 2 до {MAX_NAME_LENGTH} симв).")
@@ -384,7 +388,7 @@ async def get_sender_name(update: Update, context: CallbackContext) -> int:
     await safe_reply_text(update, f"Кого поздравляете? Например: *{EXAMPLE_TEXTS['recipient_name']}*", parse_mode="Markdown")
     return RECIPIENT_NAME_INPUT
 
-async def get_recipient_name(update: Update, context: CallbackContext) -> int:
+async def get_recipient_name(update: Update, context: CallbackContext):
     recipient_name = update.message.text.strip()
     if not validate_name(recipient_name):
         await safe_reply_text(update, f"Пожалуйста, введите корректное имя (от 2 до {MAX_NAME_LENGTH} симв).")
@@ -395,7 +399,7 @@ async def get_recipient_name(update: Update, context: CallbackContext) -> int:
     await safe_reply_text(update, "Выберите праздник или свой вариант:", reply_markup=InlineKeyboardMarkup(keyboard))
     return CONGRAT_HOLIDAY_CHOICE
 
-async def handle_congrat_holiday_choice(update: Update, context: CallbackContext) -> int:
+async def handle_congrat_holiday_choice(update: Update, context: CallbackContext):
     query = update.callback_query
     await query.answer()
     if query.data == "custom_congrat":
@@ -411,7 +415,7 @@ async def handle_congrat_holiday_choice(update: Update, context: CallbackContext
     context.user_data["publish_date"] = datetime.now().strftime("%Y-%m-%d")
     return await complete_request(update, context)
 
-async def get_custom_congrat_message(update: Update, context: CallbackContext) -> int:
+async def get_custom_congrat_message(update: Update, context: CallbackContext):
     text = update.message.text.strip()
     if len(text) > MAX_TEXT_LENGTH:
         await safe_reply_text(update, f"Текст слишком длинный (макс. {MAX_TEXT_LENGTH} симв).")
@@ -422,7 +426,7 @@ async def get_custom_congrat_message(update: Update, context: CallbackContext) -
     await safe_reply_text(update, "Введите дату публикации в формате ДД-ММ-ГГГГ:")
     return CONGRAT_DATE_INPUT
 
-async def get_congrat_date(update: Update, context: CallbackContext) -> int:
+async def get_congrat_date(update: Update, context: CallbackContext):
     date_str = update.message.text.strip()
     try:
         publish_date = datetime.strptime(date_str, "%d-%m-%Y").date()
@@ -435,7 +439,7 @@ async def get_congrat_date(update: Update, context: CallbackContext) -> int:
         await safe_reply_text(update, "Неверный формат даты. Введите ДД-ММ-ГГГГ:")
         return CONGRAT_DATE_INPUT
 
-async def handle_announce_subtype_selection(update: Update, context: CallbackContext) -> int:
+async def handle_announce_subtype_selection(update: Update, context: CallbackContext):
     query = update.callback_query
     await query.answer()
     subtype_key = query.data.replace("subtype_", "")
@@ -449,7 +453,7 @@ async def handle_announce_subtype_selection(update: Update, context: CallbackCon
     await safe_edit_message_text(query, f"Введите текст объявления (до {MAX_TEXT_LENGTH} симв.) и/или прикрепите фото.\nПример: *{example}*", reply_markup=InlineKeyboardMarkup(BACK_BUTTON), parse_mode="Markdown")
     return ANNOUNCE_TEXT_INPUT
 
-async def get_phone_number(update: Update, context: CallbackContext) -> int:
+async def get_phone_number(update: Update, context: CallbackContext):
     phone = update.message.text.strip()
     if not validate_phone(phone):
         await safe_reply_text(update, "Неверный формат номера. Используйте +7... или 8...")
@@ -458,7 +462,7 @@ async def get_phone_number(update: Update, context: CallbackContext) -> int:
     await safe_reply_text(update, f"Теперь введите текст объявления (до {MAX_TEXT_LENGTH} симв.) и/или прикрепите фото:")
     return ANNOUNCE_TEXT_INPUT
 
-async def process_text_and_photo(update: Update, context: CallbackContext) -> int:
+async def process_text_and_photo(update: Update, context: CallbackContext):
     if update.message.photo:
         context.user_data["photo_id"] = update.message.photo[-1].file_id
     
@@ -475,7 +479,7 @@ async def process_text_and_photo(update: Update, context: CallbackContext) -> in
     context.user_data["text"] = text
     return await complete_request(update, context)
 
-async def handle_censor_choice(update: Update, context: CallbackContext) -> int:
+async def handle_censor_choice(update: Update, context: CallbackContext):
     query = update.callback_query
     await query.answer()
     if query.data == "accept_censor":
@@ -488,7 +492,7 @@ async def handle_censor_choice(update: Update, context: CallbackContext) -> int:
         return ANNOUNCE_TEXT_INPUT
     return ConversationHandler.END
 
-async def complete_request(update: Update, context: CallbackContext) -> int:
+async def complete_request(update: Update, context: CallbackContext):
     user = update.effective_user
     if not can_submit_request(user.id):
         await safe_reply_text(update, "Вы отправили слишком много заявок. Попробуйте позже.")
@@ -524,12 +528,12 @@ async def complete_request(update: Update, context: CallbackContext) -> int:
     context.user_data.clear()
     return ConversationHandler.END
 
-async def back_to_start(update: Update, context: CallbackContext) -> int:
+async def back_to_start(update: Update, context: CallbackContext):
     if update.callback_query:
         await update.callback_query.answer()
     return await start_command(update, context)
 
-async def cancel_command(update: Update, context: CallbackContext) -> int:
+async def cancel_command(update: Update, context: CallbackContext):
     await safe_reply_text(update, "Действие отменено.", reply_markup=InlineKeyboardMarkup(BACK_BUTTON))
     context.user_data.clear()
     return ConversationHandler.END
@@ -610,10 +614,11 @@ async def admin_reject_application(update: Update, context: CallbackContext):
 # ========== НАСТРОЙКА ПРИЛОЖЕНИЯ TELEGRAM ==========
 async def setup_telegram_application():
     global application
-    if application is not None: # Если уже инициализировано, пропускаем
+    if application is not None:
         return
 
     application = Application.builder().token(TOKEN).build()
+    await application.initialize()
 
     # Инициализация БД
     init_db()
@@ -633,7 +638,7 @@ async def setup_telegram_application():
             ANNOUNCE_TEXT_INPUT: [MessageHandler(filters.TEXT | filters.PHOTO & ~filters.COMMAND, process_text_and_photo)],
             WAIT_CENSOR_APPROVAL: [
                 CallbackQueryHandler(handle_censor_choice, pattern="^(accept_censor|edit_censor)$"),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, process_text_and_photo) # Для случая, если пользователь вводит текст после запроса на изменение
+                MessageHandler(filters.TEXT & ~filters.COMMAND, process_text_and_photo)
             ]
         },
         fallbacks=[
@@ -665,11 +670,12 @@ async def setup_telegram_application():
     scheduler.start()
     logger.info("Планировщик запущен.")
 
-    # Уведомление администратора о запуске бота
+    # Уведомление администратора о запуске бота (ОТКЛЮЧЕНО)
+    # Убрано сообщение "Бот запущен" как было запрошено
     if ADMIN_CHAT_ID:
         BOT_STATE['start_time'] = datetime.now(TIMEZONE)
-        await safe_send_message(application.bot, ADMIN_CHAT_ID, f"✅ Бот запущен! Время работы: {get_uptime()}", disable_notification=True)
-        logger.info(f"Уведомление администратору о запуске бота отправлено в чат {ADMIN_CHAT_ID}")
+        # await safe_send_message(application.bot, ADMIN_CHAT_ID, f"✅ Бот запущен! Время работы: {get_uptime()}", disable_notification=True)
+        logger.info(f"Бот запущен. Уведомление администратору отключено по запросу.")
     BOT_STATE['running'] = True
     logger.info("Telegram Application setup complete.")
 
