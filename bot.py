@@ -4,7 +4,6 @@ import logging
 import sqlite3
 import re
 import asyncio
-import secrets
 from datetime import datetime, timedelta
 from typing import Dict, Any, Optional, Tuple, List
 # FastAPI импорты
@@ -17,7 +16,7 @@ from dotenv import load_dotenv
 import aiofiles
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 # Telegram Bot импорты
-from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
+from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.error import TelegramError
 from telegram.ext import (
     Application,
@@ -40,7 +39,7 @@ WEBHOOK_SECRET = os.getenv('WEBHOOK_SECRET')
 CHANNEL_ID = int(os.getenv('CHANNEL_ID')) if os.getenv('CHANNEL_ID') else None
 ADMIN_CHAT_ID = int(os.getenv('ADMIN_CHAT_ID')) if os.getenv('ADMIN_CHAT_ID') else None
 TIMEZONE = pytz.timezone('Europe/Moscow')
-WORKING_HOURS = (0, 23)
+WORKING_HOURS = (9, 21) # Рабочее время с 9:00 до 21:00
 WORK_ON_WEEKENDS = True
 # ========== КОНСТАНТЫ ==========
 BACK_BUTTON = [[InlineKeyboardButton("🔙 Вернуться в начало", callback_data="back_to_start")]]
@@ -50,7 +49,6 @@ DEFAULT_BAD_WORDS = ["хуй", "пизда", "блять", "блядь", "еба
 MAX_NAME_LENGTH = 50
 MAX_TEXT_LENGTH = 4000
 MAX_CONGRAT_TEXT_LENGTH = 500
-MAX_ANNOUNCE_NEWS_TEXT_LENGTH = 300
 CHANNEL_NAME = "Небольшой Мир: Николаевск"
 # ========== ПРИМЕРЫ ТЕКСТОВ ==========
 EXAMPLE_TEXTS = {
@@ -61,7 +59,7 @@ EXAMPLE_TEXTS = {
     },
     "announcement": {
         "ride": "10.02 еду в Волгоград. 2 места. Выезд в 8:00",
-        "offer": "Ищу работу водителя. Опыт 5 лет.",
+        "demand_offer": "Ищу работу водителя. Опыт 5 лет.",
         "lost": "Найден ключ у магазина 'Продукты'. Опознать по брелку."
     },
     "news": "15.01 в нашем городе открыли новую детскую площадку!"
@@ -80,17 +78,15 @@ EXAMPLE_TEXTS = {
     WAIT_CENSOR_APPROVAL
 ) = range(10)
 # ========== ТИПЫ ЗАПРОСОВ ==========
-# Изменены названия кнопок как в рабочем коде
 REQUEST_TYPES = {
     "congrat": {"name": "Поздравление", "icon": "🎉"},
-    "announcement": {"name": "Объявление", "icon": "📢"}, # Было "Спрос и предложения"
+    "announcement": {"name": "Спрос и предложения", "icon": "📢"}, # Изменено название
     "news": {"name": "Новость от жителя", "icon": "🗞️"}
 }
 # ========== ПОДТИПЫ ОБЪЯВЛЕНИЙ ==========
-# Изменены подтипы как в рабочем коде
 ANNOUNCE_SUBTYPES = {
     "ride": "🚗 Попутка",
-    "offer": "💡 Предложение", # Было "demand_offer"
+    "demand_offer": "🤝 Спрос и предложения", # Изменено название
     "lost": "🔍 Потеряли/Нашли"
 }
 # ========== ПРАЗДНИКИ ==========
@@ -197,7 +193,7 @@ def init_db():
         logger.error(f"Ошибка инициализации БД: {e}", exc_info=True)
         raise
 
-def add_application(data: Dict[str, Any]) -> Optional[int]:
+def add_application( Dict[str, Any]) -> Optional[int]:
     """Добавляет новую заявку в базу данных."""
     try:
         with get_db_connection() as conn:
@@ -323,7 +319,8 @@ def validate_phone(phone: str) -> bool:
 def is_holiday_active(holiday_date_str: str) -> bool:
     """Проверяет, активен ли праздник (в пределах 5 дней)."""
     try:
-        holiday_date = datetime.strptime(f"{datetime.now().year}-{holiday_date_str}", "%Y-%m-%d").date()
+        current_year = datetime.now().year
+        holiday_date = datetime.strptime(f"{current_year}-{holiday_date_str}", "%Y-%m-%d").date()
         today = datetime.now().date()
         return (holiday_date - timedelta(days=5)) <= today <= (holiday_date + timedelta(days=5))
     except ValueError:
@@ -530,13 +527,20 @@ async def handle_type_selection(update: Update, context: CallbackContext) -> int
         )
         return ANNOUNCE_TEXT_INPUT
     elif request_type == "congrat":
+        keyboard = [
+            [InlineKeyboardButton(holiday, callback_data=f"holiday_{holiday}")]
+            for holiday in HOLIDAYS
+            if is_holiday_active(HOLIDAYS[holiday])
+        ] + [
+            [InlineKeyboardButton("🎂 Свой праздник", callback_data="custom_congrat")],
+            [InlineKeyboardButton("🔙 Вернуться в начало", callback_data="back_to_start")]
+        ]
         await safe_edit_message_text(
             query,
-            f"Введите ваше имя (например: *{EXAMPLE_TEXTS['sender_name']}*):",
-            reply_markup=InlineKeyboardMarkup(BACK_BUTTON),
-            parse_mode="Markdown"
+            "Выберите праздник для поздравления:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
         )
-        return SENDER_NAME_INPUT
+        return CONGRAT_HOLIDAY_CHOICE
     elif request_type == "announcement":
         keyboard = [
             [InlineKeyboardButton(subtype, callback_data=f"subtype_{key}")]
@@ -582,14 +586,13 @@ async def get_recipient_name(update: Update, context: CallbackContext) -> int:
         [InlineKeyboardButton(holiday, callback_data=f"holiday_{holiday}")]
         for holiday in HOLIDAYS
         if is_holiday_active(HOLIDAYS[holiday])
-    ]
-    keyboard += [
-        [InlineKeyboardButton("🎂 Свой праздник (указать дату)", callback_data="custom_congrat")],
-        [InlineKeyboardButton("🔙 В начало", callback_data="back_to_start")]
+    ] + [
+        [InlineKeyboardButton("🎂 Свой праздник", callback_data="custom_congrat")],
+        [InlineKeyboardButton("🔙 Вернуться в начало", callback_data="back_to_start")]
     ]
     await safe_reply_text(
         update,
-        "Выберите праздник или свой вариант:",
+        "Выберите праздник для поздравления:",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
     return CONGRAT_HOLIDAY_CHOICE
@@ -648,12 +651,10 @@ async def handle_announce_subtype_selection(update: Update, context: CallbackCon
     """Обработчик выбора подтипа объявления."""
     query = update.callback_query
     await query.answer()
-    # Исправлено на "offer" как в рабочем коде
     subtype_key = query.data.replace("subtype_", "")
     context.user_data["subtype"] = subtype_key
-    # Для "Предложения" запрашиваем телефон
-    # Исправлено на "offer" как в рабочем коде
-    if subtype_key == "offer":
+    # Для "Спрос и предложения" запрашиваем телефон
+    if subtype_key == "demand_offer":
         await safe_edit_message_text(
             query,
             "Введите ваш контактный телефон (формат: +7... или 8...):",
@@ -877,6 +878,40 @@ async def admin_reject_application(update: Update, context: CallbackContext):
     else:
         await safe_edit_message_text(query, f"Ошибка отклонения заявки #{app_id}.")
 
+# ========== ДОПОЛНИТЕЛЬНЫЕ КОМАНДЫ ==========
+async def help_command(update: Update, context: CallbackContext) -> None:
+    """Обработчик команды /help."""
+    help_text = (
+        "ℹ️ *Помощь по боту*\n\n"
+        "Этот бот предназначен для отправки заявок в группу *Небольшой Мир: Николаевск*.\n\n"
+        "📌 *Как использовать:*\n"
+        "1. Нажмите /start.\n"
+        "2. Выберите тип заявки: Поздравление, Спрос и предложения или Новость от жителя.\n"
+        "3. Следуйте инструкциям бота.\n"
+        "4. Ваша заявка будет отправлена на модерацию.\n\n"
+        "Если у вас есть вопросы, обратитесь к администратору группы."
+    )
+    await safe_reply_text(update, help_text, parse_mode="Markdown")
+
+async def send_bot_status(bot: Bot) -> bool:
+    """Отправляет статус бота админу."""
+    if not ADMIN_CHAT_ID:
+        logger.warning("ID админа не задан — уведомление не отправлено.")
+        return False
+    try:
+        current_time = datetime.now(TIMEZONE)
+        message = (
+            f"🤖 *Статус бота*\n"
+            f"• Время: {current_time.strftime('%H:%M %d.%m.%Y')}\n"
+            f"• Рабочее время: {'Да' if is_working_hours() else 'Нет'}\n"
+            f"• Uptime: {get_uptime()}"
+        )
+        sent = await bot.send_message(chat_id=ADMIN_CHAT_ID, text=message, disable_notification=True)
+        return sent is not None
+    except Exception as e:
+        logger.error(f"Не удалось отправить статус админу: {e}")
+        return False
+
 # ========== НАСТРОЙКА ПРИЛОЖЕНИЯ ==========
 async def setup_telegram_application():
     """Настраивает Telegram приложение."""
@@ -938,6 +973,8 @@ async def setup_telegram_application():
             application.add_handler(CallbackQueryHandler(admin_approve_application, pattern="^approve_\\d+$"))
             application.add_handler(CallbackQueryHandler(admin_reject_application, pattern="^reject_\\d+$"))
             application.add_handler(CallbackQueryHandler(admin_view_application, pattern="^view_\\d+$"))
+            # Дополнительные команды
+            application.add_handler(CommandHandler("help", help_command))
             await application.initialize()
             # Установка вебхука
             if WEBHOOK_URL and TOKEN:
@@ -954,7 +991,9 @@ async def setup_telegram_application():
             logger.info("Планировщик запущен.")
             BOT_STATE['start_time'] = datetime.now(TIMEZONE)
             BOT_STATE['running'] = True
-            logger.info("Telegram Application setup complete. Уведомление администратору отключено.")
+            # Отправляем статус админу при запуске
+            await send_bot_status(application.bot)
+            logger.info("Telegram Application setup complete.")
         except Exception as e:
             logger.critical("Критическая ошибка при инициализации Telegram Application.", exc_info=True)
             application = None # Сбрасываем, если инициализация не удалась
@@ -1015,7 +1054,8 @@ async def status():
     return {
         "status": "running",
         "uptime": get_uptime(),
-        "bot_initialized": application is not None
+        "bot_initialized": application is not None,
+        "is_working_hours": is_working_hours()
     }
 
 @app.get("/")
