@@ -1213,13 +1213,13 @@ async def startup_event():
     BOT_STATE['start_time'] = datetime.now(TIMEZONE)
     BOT_STATE['running'] = True
     
+    # Инициализируем базу данных
+    init_db()
+    
     # Проверяем окружение
     if not check_environment():
         logger.error("Проверка окружения не пройдена")
         sys.exit(1)
-    
-    # Инициализируем базу данных
-    init_db()
     
     # Настраиваем бота
     application = await setup_bot()
