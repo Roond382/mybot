@@ -39,7 +39,7 @@ WEBHOOK_SECRET = os.getenv('WEBHOOK_SECRET')
 CHANNEL_ID = int(os.getenv('CHANNEL_ID')) if os.getenv('CHANNEL_ID') else None
 ADMIN_CHAT_ID = int(os.getenv('ADMIN_CHAT_ID')) if os.getenv('ADMIN_CHAT_ID') else None
 TIMEZONE = pytz.timezone('Europe/Moscow')
-WORKING_HOURS = (0, 23) # Возвращено из 1.txt
+WORKING_HOURS = (0, 23)
 WORK_ON_WEEKENDS = True
 # ========== КОНСТАНТЫ ==========
 BACK_BUTTON = [[InlineKeyboardButton("🔙 Вернуться в начало", callback_data="back_to_start")]]
@@ -49,22 +49,21 @@ DEFAULT_BAD_WORDS = ["хуй", "пизда", "блять", "блядь", "еба
 MAX_NAME_LENGTH = 50
 MAX_TEXT_LENGTH = 4000
 MAX_CONGRAT_TEXT_LENGTH = 500
-MAX_ANNOUNCE_NEWS_TEXT_LENGTH = 300 # Возвращено из 1.txt
+MAX_ANNOUNCE_NEWS_TEXT_LENGTH = 300
 CHANNEL_NAME = "Небольшой Мир: Николаевск"
 # ========== ПРИМЕРЫ ТЕКСТОВ ==========
-# Примеры взяты из рабочий код приема заявок.txt и 1.txt
 EXAMPLE_TEXTS = {
     "sender_name": "Иванов Виталий",
-    "recipient_name": "коллектив детсада 'Солнышко'", # Из 2.txt и рабочий код
+    "recipient_name": "коллектив детсада 'Солнышко'",
     "congrat": {
-        "custom": "Дорогая мама! Поздравляю с Днем рождения! Желаю здоровья и счастья!" # Из 2.txt и рабочий код
+        "custom": "Дорогая мама! Поздравляю с Днем рождения! Желаю здоровья и счастья!"
     },
     "announcement": {
-        "ride": "10.02 еду в Волгоград. 2 места. Выезд в 8:00", # Из 2.txt и рабочий код
-        "offer": "Продаю диван (новый). 8000₽. Фото в ЛС.", # Из рабочий код
-        "lost": "Найден ключ у магазина 'Продукты'. Опознать по брелку." # Из 2.txt и рабочий код
+        "ride": "10.02 еду в Волгоград. 2 места. Выезд в 8:00",
+        "demand_offer": "Ищу работу водителя. Опыт 5 лет.",
+        "lost": "Найден ключ у магазина 'Продукты'. Опознать по брелку."
     },
-    "news": "15.01 в нашем городе открыли новую детскую площадку!" # Из 2.txt и рабочий код
+    "news": "15.01 в нашем городе открыли новую детскую площадку!"
 }
 # ========== СОСТОЯНИЯ ДИАЛОГА ==========
 (
@@ -73,25 +72,26 @@ EXAMPLE_TEXTS = {
     RECIPIENT_NAME_INPUT,
     CONGRAT_HOLIDAY_CHOICE,
     CUSTOM_CONGRAT_MESSAGE_INPUT,
-    CONGRAT_DATE_INPUT,
+    CONGRAT_DATE_CHOICE, # Новое состояние для выбора даты
+    CONGRAT_DATE_INPUT, # Новое состояние для ввода даты
     ANNOUNCE_SUBTYPE_SELECTION,
     ANNOUNCE_TEXT_INPUT,
     PHONE_INPUT,  # Новое состояние для ввода телефона
     WAIT_CENSOR_APPROVAL,
     NEWS_PHONE_INPUT, # Новое состояние для ввода телефона в новости
     NEWS_TEXT_INPUT   # Новое состояние для ввода текста/фото в новости
-) = range(12)
+) = range(13)
 # ========== ТИПЫ ЗАПРОСОВ ==========
 REQUEST_TYPES = {
     "congrat": {"name": "Поздравление", "icon": "🎉"},
-    "announcement": {"name": "Объявление", "icon": "📢"}, # Переименовано из 2.txt
+    "announcement": {"name": "Объявление", "icon": "📢"},
     "news": {"name": "Новость от жителя", "icon": "🗞️"}
 }
 # ========== ПОДТИПЫ ОБЪЯВЛЕНИЙ ==========
-# Восстановлен подтип "offer" из рабочий код
+# Изменено название кнопки
 ANNOUNCE_SUBTYPES = {
     "ride": "🚗 Попутка",
-    "offer": "💡 Предложение", # Восстановлен из рабочий код
+    "demand_offer": "🤝 Спрос и предложения", # Изменено
     "lost": "🔍 Потеряли/Нашли"
 }
 # ========== ПРАЗДНИКИ ==========
@@ -198,7 +198,6 @@ def init_db():
         logger.error(f"Ошибка инициализации БД: {e}", exc_info=True)
         raise
 
-# ✅ Исправлена синтаксическая ошибка: добавлено имя параметра 'data'
 def add_application(data: Dict[str, Any]) -> Optional[int]:
     """Добавляет новую заявку в базу данных."""
     try:
@@ -501,18 +500,21 @@ async def publish_to_channel(app_id: int, bot: Bot) -> bool:
         f"🕒 {current_time}"
     )
     try:
+        # Используем disable_web_page_preview=True для компактности
         if photo_id:
             await bot.send_photo(
                 chat_id=CHANNEL_ID,
                 photo=photo_id,
                 caption=message_text,
-                disable_notification=True
+                disable_notification=True,
+                disable_web_page_preview=True # Отключаем превью для ссылок в подписи
             )
         else:
             await bot.send_message(
                 chat_id=CHANNEL_ID,
                 text=message_text,
-                disable_web_page_preview=True
+                disable_web_page_preview=True, # Отключаем превью для ссылок
+                disable_notification=True
             )
         mark_application_as_published(app_id)
         logger.info(f"Опубликовано сообщение #{app_id}")
@@ -542,21 +544,6 @@ async def check_pending_applications(context: CallbackContext) -> None:
     except Exception as e:
         logger.error(f"Ошибка проверки заявок: {e}")
 
-# ========== НОВАЯ ФУНКЦИЯ ДЛЯ УВЕДОМЛЕНИЯ АДМИНА О СТАТУСЕ БОТА ==========
-async def notify_admin_bot_status(status: str = "работает"):
-    """Отправляет уведомление администратору о статусе бота."""
-    if not ADMIN_CHAT_ID or not application:
-        logger.warning("ID админа не задан или бот не инициализирован — уведомление не отправлено.")
-        return False
-    try:
-        message = f"🤖 Бот {status}."
-        await application.bot.send_message(chat_id=ADMIN_CHAT_ID, text=message)
-        logger.info(f"Уведомление админу отправлено: Бот {status}.")
-        return True
-    except Exception as e:
-        logger.error(f"Не удалось отправить статус админу: {e}")
-        return False
-
 # ========== ОБРАБОТЧИКИ ДИАЛОГА ==========
 async def start_command(update: Update, context: CallbackContext) -> int:
     """Обработчик команды /start."""
@@ -565,8 +552,7 @@ async def start_command(update: Update, context: CallbackContext) -> int:
         [InlineKeyboardButton(f"{info['icon']} {info['name']}", callback_data=key)]
         for key, info in REQUEST_TYPES.items()
     ]
-    # Изменено стартовое сообщение
-    await safe_reply_text(update, "Бот работает. Выберите раздел:", reply_markup=InlineKeyboardMarkup(keyboard))
+    await safe_reply_text(update, "Здравствуйте! Выберите тип заявки:", reply_markup=InlineKeyboardMarkup(keyboard))
     return TYPE_SELECTION
 
 async def handle_type_selection(update: Update, context: CallbackContext) -> int:
@@ -632,7 +618,7 @@ async def get_recipient_name(update: Update, context: CallbackContext) -> int:
         )
         return RECIPIENT_NAME_INPUT
     context.user_data["to_name"] = recipient_name
-    # Показываем активные праздники с parse_mode="HTML"
+    # Показываем активные праздники
     keyboard = [
         [InlineKeyboardButton(holiday, callback_data=f"holiday_{holiday}")]
         for holiday in HOLIDAYS
@@ -644,8 +630,7 @@ async def get_recipient_name(update: Update, context: CallbackContext) -> int:
     await safe_reply_text(
         update,
         "Выберите праздник для поздравления:",
-        reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode="HTML" # Добавлено для корректного отображения кнопок
+        reply_markup=InlineKeyboardMarkup(keyboard)
     )
     return CONGRAT_HOLIDAY_CHOICE
 
@@ -657,7 +642,7 @@ async def handle_congrat_holiday_choice(update: Update, context: CallbackContext
         context.user_data["congrat_type"] = "custom"
         await safe_edit_message_text(
             query,
-            f"Введите текст поздравления (до {MAX_TEXT_LENGTH} символов):\nПример: *{EXAMPLE_TEXTS['congrat']['custom']}*",
+            f"Введите текст поздравления (до {MAX_CONGRAT_TEXT_LENGTH} символов):\nПример: *{EXAMPLE_TEXTS['congrat']['custom']}*",
             reply_markup=InlineKeyboardMarkup(BACK_BUTTON),
             parse_mode="Markdown"
         )
@@ -668,23 +653,64 @@ async def handle_congrat_holiday_choice(update: Update, context: CallbackContext
     from_name = context.user_data.get("from_name", "")
     to_name = context.user_data.get("to_name", "")
     context.user_data["text"] = f"{from_name} поздравляет {to_name} с {holiday}!\n{template}"
-    context.user_data["publish_date"] = datetime.now().strftime("%Y-%m-%d")
-    return await complete_request(update, context)
+    context.user_data["congrat_type"] = "standard"
+    
+    # После выбора стандартного праздника, предлагаем выбрать дату публикации
+    keyboard = [
+        [InlineKeyboardButton("📅 Сегодня", callback_data="publish_today")],
+        [InlineKeyboardButton("📆 Указать дату", callback_data="publish_custom_date")],
+        [InlineKeyboardButton("🔙 Вернуться в начало", callback_data="back_to_start")]
+    ]
+    await safe_edit_message_text(
+        query,
+        "Когда опубликовать поздравление?",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    return CONGRAT_DATE_CHOICE
+
+async def handle_congrat_date_choice(update: Update, context: CallbackContext) -> int:
+    """Обработчик выбора даты публикации поздравления."""
+    query = update.callback_query
+    await query.answer()
+    if query.data == "publish_today":
+        context.user_data["publish_date"] = datetime.now().strftime("%Y-%m-%d")
+        # Переходим к завершению запроса
+        return await complete_request(update, context)
+    elif query.data == "publish_custom_date":
+        await safe_edit_message_text(
+            query,
+            "Введите дату публикации в формате ДД-ММ-ГГГГ:",
+            reply_markup=InlineKeyboardMarkup(BACK_BUTTON)
+        )
+        return CONGRAT_DATE_INPUT
+    return ConversationHandler.END
 
 async def get_custom_congrat_message(update: Update, context: CallbackContext) -> int:
     """Получает пользовательский текст поздравления."""
     text = update.message.text.strip()
-    if len(text) > MAX_TEXT_LENGTH:
+    if len(text) > MAX_CONGRAT_TEXT_LENGTH:
         await safe_reply_text(
             update,
-            f"Текст слишком длинный (максимум {MAX_TEXT_LENGTH} символов)."
+            f"Текст слишком длинный (максимум {MAX_CONGRAT_TEXT_LENGTH} символов)."
         )
         return CUSTOM_CONGRAT_MESSAGE_INPUT
     from_name = context.user_data.get("from_name", "")
     to_name = context.user_data.get("to_name", "")
     context.user_data["text"] = f"{from_name} поздравляет {to_name}!\n{text}"
-    await safe_reply_text(update, "Введите дату публикации в формате ДД-ММ-ГГГГ:")
-    return CONGRAT_DATE_INPUT
+    context.user_data["congrat_type"] = "custom"
+    
+    # После ввода текста для пользовательского поздравления, предлагаем выбрать дату публикации
+    keyboard = [
+        [InlineKeyboardButton("📅 Сегодня", callback_data="publish_today")],
+        [InlineKeyboardButton("📆 Указать дату", callback_data="publish_custom_date")],
+        [InlineKeyboardButton("🔙 Вернуться в начало", callback_data="back_to_start")]
+    ]
+    await safe_reply_text(
+        update,
+        "Когда опубликовать поздравление?",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    return CONGRAT_DATE_CHOICE
 
 async def get_congrat_date(update: Update, context: CallbackContext) -> int:
     """Получает дату публикации поздравления."""
@@ -706,8 +732,8 @@ async def handle_announce_subtype_selection(update: Update, context: CallbackCon
     await query.answer()
     subtype_key = query.data.replace("subtype_", "")
     context.user_data["subtype"] = subtype_key
-    # Для "Предложения" запрашиваем телефон (восстановлено из рабочий код)
-    if subtype_key == "offer": 
+    # Для "Спрос и предложения" запрашиваем телефон
+    if subtype_key == "demand_offer":
         await safe_edit_message_text(
             query,
             "Введите ваш контактный телефон (формат: +7... или 8...):",
@@ -774,12 +800,22 @@ async def handle_censor_choice(update: Update, context: CallbackContext) -> int:
     await query.answer()
     if query.data == "accept_censor":
         context.user_data["text"] = context.user_data["censored_text"]
-        return await complete_request(update, context)
+        # Определяем, какой тип заявки обрабатывается, чтобы вернуться к правильному завершению
+        if context.user_data.get("type") == "congrat":
+            return await complete_request(update, context)
+        elif context.user_data.get("type") == "announcement":
+            return await complete_request(update, context)
+        elif context.user_data.get("type") == "news":
+            return await complete_request(update, context)
     elif query.data == "edit_censor":
         await safe_edit_message_text(query, "Введите исправленный текст:")
+        # Определяем, какой тип заявки обрабатывается, чтобы вернуться к правильному вводу
         if context.user_data.get("type") == "congrat":
             return CUSTOM_CONGRAT_MESSAGE_INPUT
-        return ANNOUNCE_TEXT_INPUT
+        elif context.user_data.get("type") == "announcement":
+            return ANNOUNCE_TEXT_INPUT
+        elif context.user_data.get("type") == "news":
+            return NEWS_TEXT_INPUT
     return ConversationHandler.END
 
 # ========== НОВЫЕ ОБРАБОТЧИКИ ДЛЯ НОВОСТЕЙ ==========
@@ -1061,6 +1097,9 @@ async def setup_telegram_application():
                     CUSTOM_CONGRAT_MESSAGE_INPUT: [
                         MessageHandler(filters.TEXT & ~filters.COMMAND, get_custom_congrat_message)
                     ],
+                    CONGRAT_DATE_CHOICE: [
+                        CallbackQueryHandler(handle_congrat_date_choice, pattern="^(publish_today|publish_custom_date)$")
+                    ],
                     CONGRAT_DATE_INPUT: [
                         MessageHandler(filters.TEXT & ~filters.COMMAND, get_congrat_date)
                     ],
@@ -1082,7 +1121,7 @@ async def setup_telegram_application():
                     ],
                     WAIT_CENSOR_APPROVAL: [
                         CallbackQueryHandler(handle_censor_choice, pattern="^(accept_censor|edit_censor)$"),
-                        MessageHandler(filters.TEXT & ~filters.COMMAND, process_text_and_photo)
+                        MessageHandler(filters.TEXT & ~filters.COMMAND, process_text_and_photo) # fallback для текста
                     ]
                 },
                 fallbacks=[
@@ -1114,8 +1153,6 @@ async def setup_telegram_application():
             logger.info("Планировщик запущен.")
             BOT_STATE['start_time'] = datetime.now(TIMEZONE)
             BOT_STATE['running'] = True
-            # Отправляем статус админу при запуске
-            await notify_admin_bot_status("работает")
             logger.info("Telegram Application setup complete.")
         except Exception as e:
             logger.critical("Критическая ошибка при инициализации Telegram Application.", exc_info=True)
