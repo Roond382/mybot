@@ -1215,13 +1215,14 @@ async def setup_telegram_application():
                 allow_reentry=True
             )
             application.add_handler(conv_handler)
-			application.add_handler(CommandHandler("pending", pending_command))
             # Админские коллбэки
             application.add_handler(CallbackQueryHandler(admin_approve_application, pattern="^approve_\\d+$"))
             application.add_handler(CallbackQueryHandler(admin_reject_application, pattern="^reject_\\d+$"))
             application.add_handler(CallbackQueryHandler(admin_view_application, pattern="^view_\\d+$"))
             # Дополнительные команды
             application.add_handler(CommandHandler("help", help_command))
+            # ✅ Добавлена команда /pending
+            application.add_handler(CommandHandler("pending", pending_command))
             await application.initialize()
             # Установка вебхука
             if WEBHOOK_URL and TOKEN:
