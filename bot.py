@@ -1078,7 +1078,76 @@ async def help_command(update: Update, context: CallbackContext) -> None:
         "Если у вас есть вопросы, обратитесь к администратору группы."
     )
     await safe_reply_text(update, help_text, parse_mode="Markdown")
+async def pending_command(update: Update, context: CallbackContext) -> None:
+    """Команда /pending — показывает все заявки в статусе 'pending'."""
+    if not ADMIN_CHAT_ID or update.effective_chat.id != ADMIN_CHAT_ID:
+        await safe_reply_text(update, "❌ Эта команда доступна только администратору.")
+        return
 
+    try:
+        with get_db_connection() as conn:
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT id, type, subtype, from_name, to_name, text, photo_id, phone_number
+                FROM applications
+                WHERE status = 'pending'
+                ORDER BY created_at DESC
+                LIMIT 10
+            """)
+            apps = cur.fetchall()
+
+        if not apps:
+            await safe_reply_text(update, "📭 Нет заявок, ожидающих модерации.")
+            return
+
+        for app in apps:
+            app_type = REQUEST_TYPES.get(app['type'], {}).get('name', 'Заявка')
+            subtype = ANNOUNCE_SUBTYPES.get(app['subtype'], '') if app['subtype'] else ''
+            full_type = f"{app_type}" + (f" ({subtype})" if subtype else '')
+            from_name = f"От: {app['from_name']}\n" if app['from_name'] else ''
+            to_name = f"Кому: {app['to_name']}\n" if app['to_name'] else ''
+            phone = f"Телефон: {app['phone_number']}\n" if app['phone_number'] else ''
+
+            caption = (
+                f"📨 Заявка #{app['id']}\n"
+                f"Тип: {full_type}\n"
+                f"{from_name}{to_name}{phone}"
+                f"Текст: {app['text'][:200]}...\n"
+                f"Выберите действие:"
+            )
+            keyboard = [
+                [InlineKeyboardButton("✅ Одобрить", callback_data=f"approve_{app['id']}"),
+                 InlineKeyboardButton("❌ Отклонить", callback_data=f"reject_{app['id']}")],
+                [InlineKeyboardButton("👀 Посмотреть", callback_data=f"view_{app['id']}")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+
+            if app['photo_id']:
+                try:
+                    await context.bot.send_photo(
+                        chat_id=update.effective_chat.id,
+                        photo=app['photo_id'],
+                        caption=caption,
+                        reply_markup=reply_markup
+                    )
+                except TelegramError as e:
+                    logger.warning(f"Не удалось отправить фото для заявки #{app['id']}: {e}")
+                    await context.bot.send_message(
+                        chat_id=update.effective_chat.id,
+                        text=caption,
+                        reply_markup=reply_markup
+                    )
+            else:
+                await context.bot.send_message(
+                    chat_id=update.effective_chat.id,
+                    text=caption,
+                    reply_markup=reply_markup
+                )
+
+    except Exception as e:
+        logger.error(f"Ошибка при выполнении /pending: {e}", exc_info=True)
+        await safe_reply_text(update, "❌ Произошла ошибка при получении заявок.")
 # ========== НАСТРОЙКА ПРИЛОЖЕНИЯ ==========
 async def setup_telegram_application():
     """Настраивает Telegram приложение."""
@@ -1146,6 +1215,7 @@ async def setup_telegram_application():
                 allow_reentry=True
             )
             application.add_handler(conv_handler)
+			application.add_handler(CommandHandler("pending", pending_command))
             # Админские коллбэки
             application.add_handler(CallbackQueryHandler(admin_approve_application, pattern="^approve_\\d+$"))
             application.add_handler(CallbackQueryHandler(admin_reject_application, pattern="^reject_\\d+$"))
@@ -1241,4 +1311,5 @@ async def root():
 # Для локального запуска
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=PORT)
+
 
