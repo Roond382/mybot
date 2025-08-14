@@ -18,6 +18,7 @@ from telegram.ext import (
 )
 from dotenv import load_dotenv
 from typing import Optional, List
+import aiofiles
 
 # ========== Загрузка переменных окружения ==========
 load_dotenv()
@@ -83,9 +84,9 @@ HOLIDAY_TEMPLATES = {
 
 # ========== ТИПЫ ЗАПРОСОВ ==========
 REQUEST_TYPES = {
-    "congrat": {"name": "Поздравление", "icon": "🎉"},
-    "announcement": {"name": "Объявление", "icon": "📢"},
-    "news": {"name": "Новость от жителя", "icon": "🗞️"}
+    "congrat": {"name": "🎉 Поздравление", "icon": "🎉"},
+    "announcement": {"name": "📢 Объявление", "icon": "📢"},
+    "news": {"name": "🗞️ Новость от жителя", "icon": "🗞️"}
 }
 
 # ========== ПОДТИПЫ ОБЪЯВЛЕНИЙ ==========
@@ -201,114 +202,6 @@ def can_submit_request(user_id: int) -> bool:
         return count < 5
 
 # ========== Обработчики ==========
-# ========== ФУНКЦИЯ ПРОВЕРКИ И ПУБЛИКАЦИИ ЗАЯВОК ==========
-async def check_pending_applications(application: Application):
-    """
-    Проверяет базу данных на наличие заявок, ожидающих публикации.
-    Вызывается планировщиком каждую минуту.
-    """
-    try:
-        with get_db_connection() as conn:
-            conn.row_factory = sqlite3.Row
-            cur = conn.cursor()
-            # Находим заявки, которые одобрены, но еще не опубликованы
-            cur.execute("""
-                SELECT id, type, from_name, to_name, text, photo_id, publish_date, congrat_type
-                FROM applications
-                WHERE status = 'approved' AND published_at IS NULL
-            """)
-            pending_apps = cur.fetchall()
-
-        if not pending_apps:
-            logger.info("Нет заявок, ожидающих публикации.")
-            return
-
-        logger.info(f"Найдено {len(pending_apps)} заявок для публикации.")
-        bot = application.bot
-
-        for app in pending_apps:
-            app_id = app['id']
-            try:
-                # Формируем сообщение
-                if app['type'] == 'congrat':
-                    # Для поздравлений
-                    message = (
-                        f"🎉 <b>Поздравление</b>\n\n"
-                        f"{app['text']}\n\n"
-                        f"От {app['from_name']}"
-                    )
-                else:
-                    # Для объявлений и новостей
-                    message = (
-                        f"📢 <b>Объявление</b>\n\n"
-                        f"{app['text']}"
-                    )
-
-                if app['publish_date']:
-                    message += f"\n\n📅 Опубликовано для даты: {app['publish_date']}"
-
-                message += f"\n\n#НебольшойМир:Николаевск"
-
-                # Публикуем
-                if app['photo_id']:
-                    await bot.send_photo(
-                        chat_id=CHANNEL_ID,
-                        photo=app['photo_id'],
-                        caption=message,
-                        parse_mode="HTML"
-                    )
-                else:
-                    await bot.send_message(
-                        chat_id=CHANNEL_ID,
-                        text=message,
-                        parse_mode="HTML"
-                    )
-
-                # Отмечаем как опубликованную
-                mark_application_as_published(app_id)
-                logger.info(f"Заявка #{app_id} успешно опубликована.")
-
-            except Exception as e:
-                logger.error(f"Ошибка публикации заявки #{app_id}: {e}", exc_info=True)
-                # Не отмечаем как опубликованную — попробуем снова
-
-    except Exception as e:
-        logger.error(f"Критическая ошибка при проверке заявок: {e}", exc_info=True)
-
-def mark_application_as_published(app_id: int):
-    """Отмечает заявку как опубликованную."""
-    try:
-        with get_db_connection() as conn:
-            conn.execute("""
-                UPDATE applications
-                SET published_at = CURRENT_TIMESTAMP
-                WHERE id = ?
-            """, (app_id,))
-            conn.commit()
-    except Exception as e:
-        logger.error(f"Ошибка при обновлении статуса заявки #{app_id}: {e}")
-# ========== ОТПРАВКА НОВОСТИ АДМИНУ ==========
-async def notify_admin_new_application(bot: Bot, app_id: int, app_data: dict):
-    """Отправляет новость админу на модерацию."""
-    message = (
-        f"🗞️ <b>Новость от жителя</b>\n\n"
-        f"{app_data['text']}\n\n"
-        f"📞 Телефон: {app_data['phone_number']}"
-    )
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ Одобрить", callback_data=f"approve_{app_id}"),
-         InlineKeyboardButton("❌ Отклонить", callback_data=f"reject_{app_id}")]
-    ])
-    try:
-        await bot.send_message(
-            chat_id=ADMIN_CHAT_ID,
-            text=message,
-            reply_markup=keyboard,
-            parse_mode="HTML"
-        )
-    except Exception as e:
-        logger.error(f"Не удалось отправить новость #{app_id} админу: {e}")
-
 async def safe_reply_text(update: Update, text: str, **kwargs):
     try:
         await update.message.reply_text(text, **kwargs)
@@ -463,6 +356,88 @@ async def get_custom_congrat_message(update: Update, context: CallbackContext) -
     await safe_reply_text(update, "Когда опубликовать поздравление?", reply_markup=InlineKeyboardMarkup(keyboard))
     return CONGRAT_DATE_CHOICE
 
+async def handle_announce_subtype_selection(update: Update, context: CallbackContext) -> int:
+    query = update.callback_query
+    await query.answer()
+    subtype_key = query.data.replace("subtype_", "")
+    context.user_data["subtype"] = subtype_key
+
+    example = EXAMPLE_TEXTS["announcement"].get(subtype_key, "")
+    await safe_edit_message_text(
+        query,
+        f"Введите текст объявления (до {MAX_TEXT_LENGTH} символов).\nПример: {example}",
+        reply_markup=InlineKeyboardMarkup(BACK_BUTTON)
+    )
+    return ANNOUNCE_TEXT_INPUT
+
+async def handle_announce_text_input(update: Update, context: CallbackContext) -> int:
+    text = update.message.text.strip()
+    if len(text) > MAX_TEXT_LENGTH:
+        await safe_reply_text(update, f"Слишком длинный текст. Максимум: {MAX_TEXT_LENGTH} символов.")
+        return ANNOUNCE_TEXT_INPUT
+
+    censored_text, has_bad = await check_text_for_bad_words(text)
+    if has_bad:
+        await safe_reply_text(update, "❌ Ваше сообщение содержит запрещённые слова. Заявка не отправлена.")
+        return ConversationHandler.END
+
+    context.user_data["text"] = censored_text
+
+    # Автопубликация для "Попутка"
+    if context.user_data.get("subtype") == "ride":
+        phone = context.user_data.get("phone")
+        if not phone:
+            await safe_reply_text(update, "Введите телефон:")
+            return PHONE_INPUT
+
+        try:
+            message = f"🚗 <b>Попутка</b>\n{censored_text}\n📞 <b>Телефон:</b> {phone}\n#ПопуткаНиколаевск"
+            await context.bot.send_message(
+                chat_id=CHANNEL_ID,
+                text=message,
+                parse_mode="HTML"
+            )
+            await safe_reply_text(update, "✅ Ваша заявка опубликована!")
+        except Exception as e:
+            logger.error(f"Ошибка публикации попутки: {e}")
+            await safe_reply_text(update, "❌ Не удалось опубликовать. Попробуйте позже.")
+        return ConversationHandler.END
+
+    # Для остальных — на модерацию
+    await safe_reply_text(update, "Заявка отправлена на модерацию.")
+    return await complete_request(update, context)
+
+async def get_phone_number(update: Update, context: CallbackContext) -> int:
+    phone = update.message.text.strip()
+    if not validate_phone(phone):
+        await safe_reply_text(update, "Введите корректный номер телефона (например: +79610904569).")
+        return PHONE_INPUT
+    context.user_data["phone"] = phone
+    return await complete_request(update, context)
+
+async def get_news_phone_number(update: Update, context: CallbackContext) -> int:
+    phone = update.message.text.strip()
+    if not validate_phone(phone):
+        await safe_reply_text(update, "Введите корректный номер телефона (например: +79610904569).")
+        return NEWS_PHONE_INPUT
+    context.user_data["phone"] = phone
+    await safe_reply_text(update, f"Введите текст новости (до {MAX_ANNOUNCE_NEWS_TEXT_LENGTH} символов):")
+    return NEWS_TEXT_INPUT
+
+async def get_news_text(update: Update, context: CallbackContext) -> int:
+    text = update.message.text.strip()
+    if len(text) > MAX_ANNOUNCE_NEWS_TEXT_LENGTH:
+        await safe_reply_text(update, f"Текст слишком длинный (максимум {MAX_ANNOUNCE_NEWS_TEXT_LENGTH} символов).")
+        return NEWS_TEXT_INPUT
+
+    censored_text, has_bad = await check_text_for_bad_words(text)
+    if has_bad:
+        await safe_reply_text(update, "❌ Ваше сообщение содержит запрещённые слова. Заявка не отправлена.")
+        return ConversationHandler.END
+
+    context.user_data["text"] = censored_text
+    return await complete_request(update, context)
+
 async def complete_request(update: Update, context: CallbackContext) -> int:
     user = update.effective_user
     if not can_submit_request(user.id):
@@ -474,17 +449,129 @@ async def complete_request(update: Update, context: CallbackContext) -> int:
     publish_date = context.user_data.get("publish_date")
     from_name = context.user_data.get("from_name", "")
     to_name = context.user_data.get("to_name", "")
+    phone = context.user_data.get("phone", "")
+    congrat_type = context.user_data.get("congrat_type", "")
 
     with get_db_connection() as conn:
         conn.execute("""
-            INSERT INTO applications (user_id, username, type, from_name, to_name, text, status, publish_date)
-            VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)
-        """, (user.id, user.username, type_, from_name, to_name, text, publish_date))
+            INSERT INTO applications (user_id, username, type, subtype, from_name, to_name, text, phone_number, status, publish_date, congrat_type)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+        """, (user.id, user.username, type_, context.user_data.get("subtype"), from_name, to_name, text, phone, publish_date, congrat_type))
         app_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
 
     await safe_reply_text(update, f"✅ Заявка #{app_id} отправлена на модерацию.")
     context.user_data.clear()
     return ConversationHandler.END
+
+# ========== ФУНКЦИЯ ПРОВЕРКИ И ПУБЛИКАЦИИ ЗАЯВОК ==========
+async def check_pending_applications():
+    """
+    Проверяет базу данных на наличие заявок, ожидающих публикации.
+    Вызывается планировщиком каждую минуту.
+    """
+    global application
+    if application is None:
+        logger.warning("Application не инициализирован. Пропуск публикации.")
+        return
+
+    try:
+        with get_db_connection() as conn:
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT id, type, from_name, to_name, text, photo_id, publish_date, congrat_type, phone_number
+                FROM applications
+                WHERE status = 'approved' AND published_at IS NULL
+            """)
+            pending_apps = cur.fetchall()
+
+        if not pending_apps:
+            logger.info("Нет заявок, ожидающих публикации.")
+            return
+
+        logger.info(f"Найдено {len(pending_apps)} заявок для публикации.")
+        bot = application.bot
+
+        for app in pending_apps:
+            app_id = app['id']
+            try:
+                if app['type'] == 'congrat':
+                    message = (
+                        f"🎉 <b>Поздравление</b>\n\n"
+                        f"{app['text']}\n\n"
+                        f"От {app['from_name']}"
+                    )
+                else:
+                    message = (
+                        f"📢 <b>Объявление</b>\n\n"
+                        f"{app['text']}"
+                    )
+
+                if app['phone_number']:
+                    message += f"\n📞 <b>Телефон:</b> {app['phone_number']}"
+
+                if app['publish_date']:
+                    message += f"\n\n📅 Опубликовано для даты: {app['publish_date']}"
+
+                message += f"\n\n#НебольшойМир:Николаевск"
+
+                if app['photo_id']:
+                    await bot.send_photo(
+                        chat_id=CHANNEL_ID,
+                        photo=app['photo_id'],
+                        caption=message,
+                        parse_mode="HTML"
+                    )
+                else:
+                    await bot.send_message(
+                        chat_id=CHANNEL_ID,
+                        text=message,
+                        parse_mode="HTML"
+                    )
+
+                mark_application_as_published(app_id)
+                logger.info(f"Заявка #{app_id} успешно опубликована.")
+
+            except Exception as e:
+                logger.error(f"Ошибка публикации заявки #{app_id}: {e}", exc_info=True)
+
+    except Exception as e:
+        logger.error(f"Критическая ошибка при проверке заявок: {e}", exc_info=True)
+
+def mark_application_as_published(app_id: int):
+    """Отмечает заявку как опубликованную."""
+    try:
+        with get_db_connection() as conn:
+            conn.execute("""
+                UPDATE applications
+                SET published_at = CURRENT_TIMESTAMP, status = 'published'
+                WHERE id = ?
+            """, (app_id,))
+            conn.commit()
+    except Exception as e:
+        logger.error(f"Ошибка при обновлении статуса заявки #{app_id}: {e}")
+
+# ========== ОТПРАВКА НОВОСТИ АДМИНУ ==========
+async def notify_admin_new_application(bot: Bot, app_id: int, app_data: dict):
+    """Отправляет новость админу на модерацию."""
+    message = (
+        f"🗞️ <b>Новость от жителя</b>\n\n"
+        f"{app_data['text']}\n\n"
+        f"📞 Телефон: {app_data['phone_number']}"
+    )
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Одобрить", callback_data=f"approve_{app_id}"),
+         InlineKeyboardButton("❌ Отклонить", callback_data=f"reject_{app_id}")]
+    ])
+    try:
+        await bot.send_message(
+            chat_id=ADMIN_CHAT_ID,
+            text=message,
+            reply_markup=keyboard,
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        logger.error(f"Не удалось отправить новость #{app_id} админу: {e}")
 
 # ========== Инициализация бота ==========
 async def initialize_bot():
@@ -511,7 +598,7 @@ async def startup_event():
         executors={'default': AsyncIOExecutor()},
         timezone=TIMEZONE
     )
-    scheduler.add_job(check_pending_applications, 'interval', minutes=1, args=[application])
+    scheduler.add_job(check_pending_applications, 'interval', minutes=1)
     scheduler.start()
     BOT_STATE['running'] = True
     BOT_STATE['start_time'] = datetime.now(TIMEZONE)
@@ -533,11 +620,18 @@ async def telegram_webhook(secret: str, request: Request):
         logger.error(f"Ошибка вебхука: {e}")
         raise HTTPException(status_code=500, detail="Internal error")
 
+@app.get("/status")
+async def status():
+    """Статус бота."""
+    return {
+        "status": "running",
+        "uptime": datetime.now(TIMEZONE) - BOT_STATE['start_time'],
+        "bot_initialized": application is not None
+    }
+
 @app.get("/")
 async def root():
-    return {"status": "running"}
+    return {"message": "Telegram Bot Webhook Listener"}
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=PORT)
-
-
