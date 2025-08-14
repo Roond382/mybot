@@ -511,7 +511,7 @@ async def startup_event():
         executors={'default': AsyncIOExecutor()},
         timezone=TIMEZONE
     )
-    scheduler.add_job(check_pending_applications, 'interval', minutes=1)
+    scheduler.add_job(check_pending_applications, 'interval', minutes=1, args=[application])
     scheduler.start()
     BOT_STATE['running'] = True
     BOT_STATE['start_time'] = datetime.now(TIMEZONE)
@@ -539,4 +539,5 @@ async def root():
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=PORT)
+
 
