@@ -38,8 +38,17 @@ BAD_WORDS_FILE = 'bad_words.txt'
 DEFAULT_BAD_WORDS = ["хуй", "пизда", "блять", "блядь", "ебать", "сука"]
 MAX_NAME_LENGTH = 50
 
-if not all([TOKEN, CHANNEL_ID, ADMIN_CHAT_ID]):
-    raise ValueError("Ключевые переменные Telegram не установлены!")
+# ========== Проверка обязательных переменных ==========
+missing_vars = []
+if not TOKEN:
+    missing_vars.append("TELEGRAM_TOKEN")
+if not CHANNEL_ID:
+    missing_vars.append("CHANNEL_ID")
+if not ADMIN_CHAT_ID:
+    missing_vars.append("ADMIN_CHAT_ID")
+
+if missing_vars:
+    raise ValueError(f"Ключевые переменные окружения не установлены: {', '.join(missing_vars)}")
 
 # ========== Константы ==========
 BACK_BUTTON = [[InlineKeyboardButton("🔙 Вернуться в начало", callback_data="back_to_start")]]
@@ -208,7 +217,7 @@ def can_submit_request(user_id: int) -> bool:
         return count < 5
 
 # ========== Функции для базы данных ==========
-def add_application( dict) -> Optional[int]:
+def add_application(data: dict) -> Optional[int]:  # Исправлено: data: dict
     try:
         with get_db_connection() as conn:
             cur = conn.cursor()
@@ -911,7 +920,15 @@ async def initialize_bot():
 
         await application.initialize()
         await application.start()
-        await application.bot.set_webhook(url=WEBHOOK_URL, secret_token=WEBHOOK_SECRET)
+
+        # Устанавливаем вебхук только если URL задан
+        if WEBHOOK_URL:
+            webhook_url = f"{WEBHOOK_URL}/telegram-webhook/{WEBHOOK_SECRET}"
+            await application.bot.set_webhook(url=webhook_url, secret_token=WEBHOOK_SECRET)
+            logger.info(f"Вебхук установлен: {webhook_url}")
+        else:
+            logger.warning("WEBHOOK_URL не задан. Вебхук не будет установлен.")
+
         logger.info("Бот инициализирован.")
 
 # ========== Обработка выбора при цензуре ==========
@@ -971,5 +988,3 @@ async def root():
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=PORT)
-
-
