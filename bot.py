@@ -307,7 +307,9 @@ async def notify_admin_new_application(bot: Bot, app_id: int, app_data: dict):
             parse_mode="HTML"
         )
     except Exception as e:
-        logger.error(f"Не удалось отправить новость #{app_id} админу: {e}")async def safe_reply_text(update: Update, text: str, **kwargs):
+        logger.error(f"Не удалось отправить новость #{app_id} админу: {e}")
+
+async def safe_reply_text(update: Update, text: str, **kwargs):
     try:
         await update.message.reply_text(text, **kwargs)
     except Exception as e:
