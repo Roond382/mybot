@@ -634,4 +634,5 @@ async def root():
     return {"message": "Telegram Bot Webhook Listener"}
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=PORT)
+    application.run_polling()
+
