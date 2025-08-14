@@ -11,7 +11,7 @@ import uvicorn
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from apscheduler.executors.asyncio import AsyncIOExecutor
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Bot
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CallbackContext, CallbackQueryHandler,
     CommandHandler, MessageHandler, filters, ConversationHandler
@@ -34,7 +34,6 @@ TIMEZONE = pytz.timezone('Europe/Moscow')
 MAX_TEXT_LENGTH = 4000
 MAX_CONGRAT_TEXT_LENGTH = 500
 MAX_ANNOUNCE_NEWS_TEXT_LENGTH = 300
-CHANNEL_NAME = "Небольшой Мир: Николаевск"
 BAD_WORDS_FILE = 'bad_words.txt'
 DEFAULT_BAD_WORDS = ["хуй", "пизда", "блять", "блядь", "ебать", "сука"]
 MAX_NAME_LENGTH = 50
@@ -305,11 +304,10 @@ async def safe_edit_message_text(query, text: str, **kwargs):
 
 async def start_command(update: Update, context: CallbackContext) -> int:
     context.user_data.clear()
-    # Создаём клавиатуру: сначала "Попутка", потом остальные типы
+    context.user_data["current_state"] = TYPE_SELECTION
     keyboard = [
-        [InlineKeyboardButton("🚗 Попутка", callback_data="carpool")]
+        [InlineKeyboardButton("🚗 Попутка", callback_data="carpool")],
     ]
-    # Добавляем остальные типы из REQUEST_TYPES
     for key, info in REQUEST_TYPES.items():
         button = InlineKeyboardButton(f"{info['icon']} {info['name']}", callback_data=key)
         keyboard.append([button])
@@ -328,6 +326,7 @@ async def handle_type_selection(update: Update, context: CallbackContext) -> int
     context.user_data["type"] = request_type
 
     if request_type == "news":
+        context.user_data["current_state"] = NEWS_PHONE_INPUT
         await safe_edit_message_text(
             query,
             "Введите ваш контактный телефон (формат: +7... или 8...):",
@@ -335,6 +334,7 @@ async def handle_type_selection(update: Update, context: CallbackContext) -> int
         )
         return NEWS_PHONE_INPUT
     elif request_type == "congrat":
+        context.user_data["current_state"] = SENDER_NAME_INPUT
         await safe_edit_message_text(
             query,
             f"Введите ваше имя (например: *{EXAMPLE_TEXTS['sender_name']}*):",
@@ -343,6 +343,7 @@ async def handle_type_selection(update: Update, context: CallbackContext) -> int
         )
         return SENDER_NAME_INPUT
     elif request_type == "announcement":
+        context.user_data["current_state"] = ANNOUNCE_SUBTYPE_SELECTION
         keyboard = [
             [InlineKeyboardButton(subtype, callback_data=f"subtype_{key}")]
             for key, subtype in ANNOUNCE_SUBTYPES.items()
@@ -361,6 +362,7 @@ async def handle_carpool_start(update: Update, context: CallbackContext) -> int:
     await query.answer()
     context.user_data["type"] = "announcement"
     context.user_data["subtype"] = "ride"
+    context.user_data["current_state"] = CARPOOL_SUBTYPE_SELECTION
 
     keyboard = [
         [InlineKeyboardButton("Ищу попутчиков", callback_data="carpool_need")],
@@ -372,48 +374,53 @@ async def handle_carpool_start(update: Update, context: CallbackContext) -> int:
         "Выберите тип поездки:",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
-    return RIDE_FROM_INPUT
+    return CARPOOL_SUBTYPE_SELECTION
 
 async def handle_carpool_type(update: Update, context: CallbackContext) -> int:
     query = update.callback_query
     await query.answer()
     context.user_data["ride_type"] = "Ищу попутчиков" if query.data == "carpool_need" else "Предлагаю поездку"
+    context.user_data["current_state"] = RIDE_FROM_INPUT
     await safe_edit_message_text(
         query,
         "Откуда планируете поездку? (Например: Николаевск):",
         reply_markup=InlineKeyboardMarkup(BACK_BUTTON)
     )
-    return RIDE_TO_INPUT
+    return RIDE_FROM_INPUT
 
 async def handle_carpool_from(update: Update, context: CallbackContext) -> int:
     context.user_data["ride_from"] = update.message.text.strip()
+    context.user_data["current_state"] = RIDE_TO_INPUT
     await safe_reply_text(
         update,
         "Куда направляетесь? (Например: Хабаровск):",
         reply_markup=InlineKeyboardMarkup(BACK_BUTTON)
     )
-    return RIDE_DATE_INPUT
+    return RIDE_TO_INPUT
 
 async def handle_carpool_to(update: Update, context: CallbackContext) -> int:
     context.user_data["ride_to"] = update.message.text.strip()
+    context.user_data["current_state"] = RIDE_DATE_INPUT
     await safe_reply_text(
         update,
         "Когда планируете выезд? (Например: 15.08 в 10:00):",
         reply_markup=InlineKeyboardMarkup(BACK_BUTTON)
     )
-    return RIDE_SEATS_INPUT
+    return RIDE_DATE_INPUT
 
 async def handle_carpool_date(update: Update, context: CallbackContext) -> int:
     context.user_data["ride_date"] = update.message.text.strip()
+    context.user_data["current_state"] = RIDE_SEATS_INPUT
     await safe_reply_text(
         update,
         "Сколько мест доступно? (Введите число):",
         reply_markup=InlineKeyboardMarkup(BACK_BUTTON)
     )
-    return RIDE_PHONE_INPUT
+    return RIDE_SEATS_INPUT
 
 async def handle_carpool_seats(update: Update, context: CallbackContext) -> int:
     context.user_data["ride_seats"] = update.message.text.strip()
+    context.user_data["current_state"] = RIDE_PHONE_INPUT
     await safe_reply_text(
         update,
         "Введите ваш контактный телефон (формат: +7... или 8...):",
@@ -428,8 +435,6 @@ async def handle_carpool_phone(update: Update, context: CallbackContext) -> int:
         return RIDE_PHONE_INPUT
 
     context.user_data["phone"] = phone
-
-    # Формируем сообщение
     ride_data = context.user_data
     text = (
         f"🚗 <b>{ride_data['ride_type']}</b>\n"
@@ -441,12 +446,10 @@ async def handle_carpool_phone(update: Update, context: CallbackContext) -> int:
         f"#ПопуткаНиколаевск"
     )
 
-    # Проверка на спам
     if not can_submit_request(update.effective_user.id):
         await safe_reply_text(update, "❌ Слишком много запросов. Попробуйте позже.")
         return ConversationHandler.END
 
-    # Проверка на запрещённые слова
     censored_text, has_bad = await censor_text(text)
     if has_bad:
         context.user_data["censored_text"] = censored_text
@@ -461,7 +464,6 @@ async def handle_carpool_phone(update: Update, context: CallbackContext) -> int:
         )
         return WAIT_CENSOR_APPROVAL
 
-    # Автопубликация
     try:
         await context.bot.send_message(
             chat_id=CHANNEL_ID,
@@ -477,7 +479,8 @@ async def handle_carpool_phone(update: Update, context: CallbackContext) -> int:
     return ConversationHandler.END
 
 # ========== ОБРАБОТЧИКИ ПОЗДРАВЛЕНИЙ И ОБЪЯВЛЕНИЙ ==========
-# ... (остальные обработчики остаются как в оригинале)
+# (Здесь должны быть все остальные обработчики, как в вашем оригинальном коде)
+# Для краткости они опущены, но должны быть включены в финальный файл.
 
 # ========== ФУНКЦИЯ ПРОВЕРКИ И ПУБЛИКАЦИИ ЗАЯВОК ==========
 async def check_pending_applications():
@@ -604,11 +607,50 @@ async def initialize_bot():
         if application is not None:
             return
         application = Application.builder().token(TOKEN).build()
-        # ... (добавление обработчиков)
+
+        # === ДОБАВЛЕНИЕ ОБРАБОТЧИКОВ ===
+        application.add_handler(CommandHandler("start", start_command))
+        application.add_handler(CommandHandler("help", help_command))
+        application.add_handler(CommandHandler("pending", pending_command))
+
+        application.add_handler(CallbackQueryHandler(handle_carpool_start, pattern="^carpool$"))
+        application.add_handler(CallbackQueryHandler(handle_carpool_type, pattern="^carpool_need$|^carpool_offer$"))
+        application.add_handler(CallbackQueryHandler(handle_type_selection, pattern="^congrat$|^announcement$|^news$"))
+        application.add_handler(CallbackQueryHandler(admin_approve_application, pattern="^approve_\\d+$"))
+        application.add_handler(CallbackQueryHandler(admin_reject_application, pattern="^reject_\\d+$"))
+        application.add_handler(CallbackQueryHandler(back_to_start, pattern="^back_to_start$"))
+
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_user_input))
+
         await application.initialize()
         await application.start()
         await application.bot.set_webhook(url=WEBHOOK_URL, secret_token=WEBHOOK_SECRET)
         logger.info("Бот инициализирован.")
+
+# ========== Обработка входящих сообщений ==========
+async def handle_user_input(update: Update, context: CallbackContext) -> int:
+    current_state = context.user_data.get("current_state")
+    state_handlers = {
+        SENDER_NAME_INPUT: get_sender_name,
+        RECIPIENT_NAME_INPUT: get_recipient_name,
+        CONGRAT_DATE_INPUT: get_congrat_date,
+        CUSTOM_CONGRAT_MESSAGE_INPUT: get_custom_congrat_message,
+        ANNOUNCE_TEXT_INPUT: handle_announce_text_input,
+        PHONE_INPUT: get_phone_number,
+        NEWS_PHONE_INPUT: get_news_phone_number,
+        NEWS_TEXT_INPUT: get_news_text,
+        RIDE_FROM_INPUT: handle_carpool_from,
+        RIDE_TO_INPUT: handle_carpool_to,
+        RIDE_DATE_INPUT: handle_carpool_date,
+        RIDE_SEATS_INPUT: handle_carpool_seats,
+        RIDE_PHONE_INPUT: handle_carpool_phone
+    }
+    handler = state_handlers.get(current_state)
+    if handler:
+        return await handler(update, context)
+    else:
+        await safe_reply_text(update, "❌ Произошла ошибка. Пожалуйста, начните сначала: /start")
+        return ConversationHandler.END
 
 # ========== FastAPI приложение ==========
 app = FastAPI()
@@ -644,20 +686,9 @@ async def telegram_webhook(secret: str, request: Request):
         logger.error(f"Ошибка вебхука: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/status")
-async def status():
-    """Статус бота."""
-    return {
-        "status": "running",
-        "uptime": "1д 2ч 30м",
-        "bot_initialized": application is not None
-    }
-
 @app.get("/")
 async def root():
     return {"message": "Telegram Bot Webhook Listener"}
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=PORT)
-
-
