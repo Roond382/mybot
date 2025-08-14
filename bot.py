@@ -722,8 +722,14 @@ async def complete_request(update: Update, context: CallbackContext) -> int:
 
     app_id = add_application(app_data)
     if app_id:
+        # === КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: Отправляем уведомление админу для ВСЕХ заявок, кроме "Попутки" ===
+        if user_data['type'] != "announcement" or user_data.get('subtype') != "ride":
+            if ADMIN_CHAT_ID:
+                await notify_admin_new_application(context.bot, app_id, app_data)
+            else:
+                logger.warning("ADMIN_CHAT_ID не задан. Уведомление администратору не отправлено.")
+        
         if user_data['type'] == "news":
-            # Новости публикуются без модерации
             await publish_to_channel(app_id, context.bot)
             await safe_reply_text(update, "✅ Ваша новость опубликована!")
         else:
@@ -1013,6 +1019,7 @@ async def root():
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=PORT)
+
 
 
 
