@@ -318,7 +318,23 @@ async def start_command(update: Update, context: CallbackContext) -> int:
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
     return TYPE_SELECTION
-
+async def back_to_start(update: Update, context: CallbackContext) -> int:
+    """Обработчик кнопки 'Вернуться в начало'."""
+    query = update.callback_query
+    await query.answer()
+    context.user_data.clear()
+    keyboard = [
+        [InlineKeyboardButton("🚗 Попутка", callback_data="carpool")],
+    ]
+    for key, info in REQUEST_TYPES.items():
+        button = InlineKeyboardButton(f"{info['icon']} {info['name']}", callback_data=key)
+        keyboard.append([button])
+    
+    await query.edit_message_text(
+        "👋 Здравствуйте!\nВыберите, что хотите отправить в канал:",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    return TYPE_SELECTION
 async def handle_type_selection(update: Update, context: CallbackContext) -> int:
     query = update.callback_query
     await query.answer()
@@ -692,3 +708,4 @@ async def root():
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=PORT)
+
