@@ -972,6 +972,30 @@ async def cancel_command(update: Update, context: CallbackContext) -> int:
     context.user_data.clear()
     return ConversationHandler.END
 
+async def back_to_start(update: Update, context: CallbackContext) -> int:
+    """Возвращает пользователя в главное меню."""
+    query = update.callback_query
+    if query:
+        await query.answer()
+    
+    # Очищаем данные пользователя
+    context.user_data.clear()
+    
+    # Создаем клавиатуру главного меню
+    keyboard = [
+        [InlineKeyboardButton(f"{info['icon']} {info['name']}", callback_data=key)]
+        for key, info in REQUEST_TYPES.items()
+    ]
+    
+    # Отправляем сообщение с меню
+    await safe_reply_text(
+        update,
+        "Вы вернулись в главное меню. Выберите действие:",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    
+    return TYPE_SELECTION
+
 def main() -> None:
     """Основная функция запуска бота."""
     try:
@@ -1043,4 +1067,5 @@ if __name__ == '__main__':
         uvicorn.run(app, host="0.0.0.0", port=PORT)
     else:
         main()
+
 
