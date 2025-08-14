@@ -217,7 +217,7 @@ def can_submit_request(user_id: int) -> bool:
         return count < 5
 
 # ========== Функции для базы данных ==========
-def add_application(data: dict) -> Optional[int]:  # Исправлено: data: dict
+def add_application( dict) -> Optional[int]:  # Исправлено:  dict
     try:
         with get_db_connection() as conn:
             cur = conn.cursor()
@@ -880,8 +880,12 @@ async def initialize_bot():
         application = Application.builder().token(TOKEN).build()
 
         # Создаем ConversationHandler
+        # Ключевое исправление: добавляем handle_carpool_start в entry_points
         conv_handler = ConversationHandler(
-            entry_points=[CommandHandler('start', start_command)],
+            entry_points=[
+                CommandHandler('start', start_command),
+                CallbackQueryHandler(handle_carpool_start, pattern="^carpool$")  # Теперь "Попутка" запускает диалог
+            ],
             states={
                 TYPE_SELECTION: [CallbackQueryHandler(handle_type_selection)],
                 CARPOOL_SUBTYPE_SELECTION: [CallbackQueryHandler(handle_carpool_type)],
@@ -914,20 +918,19 @@ async def initialize_bot():
         application.add_handler(conv_handler)
         application.add_handler(CommandHandler("help", help_command))
         application.add_handler(CommandHandler("pending", pending_command))
-        application.add_handler(CallbackQueryHandler(handle_carpool_start, pattern="^carpool$"))
+        # ❌ Убрано: CallbackQueryHandler(handle_carpool_start, pattern="^carpool$") — теперь он внутри conv_handler
         application.add_handler(CallbackQueryHandler(admin_approve_application, pattern="^approve_\\d+$"))
         application.add_handler(CallbackQueryHandler(admin_reject_application, pattern="^reject_\\d+$"))
 
         await application.initialize()
-        await application.start()
 
         # Устанавливаем вебхук только если URL задан
-        if WEBHOOK_URL:
+        if WEBHOOK_URL and WEBHOOK_SECRET:
             webhook_url = f"{WEBHOOK_URL}/telegram-webhook/{WEBHOOK_SECRET}"
             await application.bot.set_webhook(url=webhook_url, secret_token=WEBHOOK_SECRET)
             logger.info(f"Вебхук установлен: {webhook_url}")
         else:
-            logger.warning("WEBHOOK_URL не задан. Вебхук не будет установлен.")
+            logger.warning("WEBHOOK_URL или WEBHOOK_SECRET не заданы. Вебхук не будет установлен.")
 
         logger.info("Бот инициализирован.")
 
