@@ -6,55 +6,107 @@ import logging
 import asyncio
 from pathlib import Path
 from typing import Optional, Dict, List
-from dotenv import load_dotenv
+from datetime import datetime
+import pytz
+from fastapi import FastAPI, Request, HTTPException
+from fastapi.responses import JSONResponse
+import uvicorn
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
+from apscheduler.executors.asyncio import AsyncIOExecutor
 from telegram import (
-    InlineKeyboardButton, InlineKeyboardMarkup, Update, BotCommand
+    Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 )
 from telegram.ext import (
-    Application, CallbackQueryHandler, ContextTypes, CommandHandler,
-    MessageHandler, filters, ConversationHandler
+    Application, CallbackContext, CallbackQueryHandler,
+    CommandHandler, MessageHandler, filters, ConversationHandler
 )
-from telegram.error import Conflict, RetryAfter, TimedOut, NetworkError
+from dotenv import load_dotenv
 
-# --- 1. НАСТРОЙКА ЛОГИРОВАНИЯ ---
+# ========== Загрузка переменных окружения ==========
+load_dotenv()
+
+# ========== Конфигурация ==========
+PORT = int(os.environ.get('PORT', 10000))
+WEBHOOK_URL = os.getenv('WEBHOOK_URL', '')
+TOKEN = os.getenv('TELEGRAM_TOKEN')
+WEBHOOK_SECRET = os.getenv('WEBHOOK_SECRET')
+CHANNEL_ID = int(os.getenv('CHANNEL_ID')) if os.getenv('CHANNEL_ID') else None
+ADMIN_CHAT_ID = int(os.getenv('ADMIN_CHAT_ID')) if os.getenv('ADMIN_CHAT_ID') else None
+TIMEZONE = pytz.timezone('Europe/Moscow')
+MAX_TEXT_LENGTH = 4000
+
+# Проверка обязательных переменных
+if not all([TOKEN, CHANNEL_ID, ADMIN_CHAT_ID]):
+    raise ValueError("Ключевые переменные Telegram не установлены!")
+
+# ========== Константы ==========
+BACK_BUTTON = [[InlineKeyboardButton("🔙 Вернуться в начало", callback_data="back_to_start")]]
+
+# --- Типы заявок ---
+REQUEST_TYPES = {
+    "congrat": {"name": "🎉 Поздравление", "icon": "🎉"},
+    "announcement": {"name": "📢 Объявление", "icon": "📢"},
+    "news": {"name": "🗞️ Новость от жителя", "icon": "🗞️"},
+    "carpool": {"name": "🚗 Попутка", "icon": "🚗"},  # Добавлено в главное меню
+}
+
+# --- Подтипы попутки ---
+CARPOOL_SUBTYPES = {
+    "has_seats": "Есть места",
+    "needs_seats": "Нужны места"
+}
+
+# --- Примеры текстов ---
+EXAMPLE_TEXTS = {
+    "sender_name": "Иванов Виталий",
+    "recipient_name": "коллектив детсада 'Солнышко'",
+    "congrat": {
+        "birthday": "С Днём рождения, дорогие сотрудники!",
+        "wedding": "Поздравляем с золотой свадьбой!"
+    },
+    "announcement": {
+        "sp": "Сдам 2-комнатную квартиру, 15000 руб, коммуналка включена",
+        "n": "Куплю старые батарейки, платим деньги"
+    },
+    "carpool": {
+        "has_seats": "10.08 еду в Хабаровск. 2 места. Выезд в 9:00",
+        "needs_seats": "Ищу попутку в Николаевск на 12.08"
+    }
+}
+
+# --- Состояния ---
+TYPE_SELECTION = "TYPE_SELECTION"
+SENDER_NAME_INPUT = "SENDER_NAME_INPUT"
+RECIPIENT_NAME_INPUT = "RECIPIENT_NAME_INPUT"
+CONGRAT_TEXT_INPUT = "CONGRAT_TEXT_INPUT"
+ANNOUNCE_SUBTYPE = "ANNOUNCE_SUBTYPE"
+ANNOUNCE_TEXT_INPUT = "ANNOUNCE_TEXT_INPUT"
+NEWS_PHONE_INPUT = "NEWS_PHONE_INPUT"
+NEWS_TEXT_INPUT = "NEWS_TEXT_INPUT"
+CARPOOL_SUBTYPE = "CARPOOL_SUBTYPE"
+CARPOOL_TEXT_INPUT = "CARPOOL_TEXT_INPUT"
+CARPOOL_PHONE_INPUT = "CARPOOL_PHONE_INPUT"
+
+# ========== Настройка логирования ==========
 logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler("bot_final.log", encoding="utf-8"),
+        logging.FileHandler('bot.log'),
         logging.StreamHandler()
     ]
 )
 logger = logging.getLogger(__name__)
 
-# --- 2. КОНФИГУРАЦИЯ ---
-class Config:
-    def __init__(self):
-        BASE_DIR = Path(__file__).resolve().parent
-        load_dotenv(BASE_DIR / ".env")
-        self.BASE_DIR = BASE_DIR
-        self.DB_FILE = BASE_DIR / "db.sqlite"
-        self.TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-        self.ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID", 0))
-        self.CHANNEL_ID = os.getenv("CHANNEL_ID")
-        self.BAD_WORDS_FILE = BASE_DIR / "bad_words.txt"
-        self.DEFAULT_BAD_WORDS = ["хуй", "пизда", "блять", "блядь", "ебать", "сука"]
-        self.WORKING_HOURS = (0, 23)
-        self.WORK_ON_WEEKENDS = True
-        self.MAX_TEXT_LENGTH = 4000
+# ========== Глобальное состояние ==========
+BOT_STATE = {'running': False, 'start_time': None, 'last_activity': None}
+application_lock = asyncio.Lock()
+application: Optional[Application] = None
 
-        if not all([self.TOKEN, self.ADMIN_CHAT_ID, self.CHANNEL_ID]):
-            raise ValueError("Ключевые переменные Telegram не установлены!")
-
-try:
-    config = Config()
-except ValueError as e:
-    logger.critical(f"Критическая ошибка конфигурации: {e}")
-    exit(1)
-
-# --- 3. УПРАВЛЕНИЕ БАЗОЙ ДАННЫХ ---
+# ========== База данных ==========
 def get_db_connection() -> sqlite3.Connection:
-    conn = sqlite3.connect(config.DB_FILE, check_same_thread=False)
+    conn = sqlite3.connect('db.sqlite', check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -78,160 +130,145 @@ def init_db():
                 publish_date DATE
             )
         """)
-        # Создаем индекс для быстрого поиска заявок на модерации
-        conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_pending 
-            ON applications (status) WHERE status = 'pending'
-        """)
-        # Добавляем поле phone_number, если его нет
         try:
             conn.execute("ALTER TABLE applications ADD COLUMN phone_number TEXT")
             conn.commit()
-            logger.info("Добавлено поле phone_number в таблицу applications")
         except sqlite3.OperationalError:
-            pass  # Поле уже существует
+            pass
         logger.info("База данных инициализирована.")
 
-# --- 4. КОНСТАНТЫ И ТИПЫ ЗАЯВОК ---
-BACK_BUTTON = [[InlineKeyboardButton("🔙 Вернуться в начало", callback_data="back_to_start")]]
-
-REQUEST_TYPES = {
-    "congrat": {"name": "🎉 Поздравление", "icon": "🎉"},
-    "announcement": {"name": "📢 Объявление", "icon": "📢"},
-    "news": {"name": "🗞️ Новость от жителя", "icon": "🗞️"},
-    "carpool": {"name": "🚗 Попутка", "icon": "🚗"},
-}
-
-# Подтипы для "Попутка" (без эмодзи внутри)
-CARPOOL_SUBTYPES = {
-    "has_seats": "Есть места",
-    "needs_seats": "Нужны места"
-}
-
-EXAMPLE_TEXTS = {
-    "carpool": {
-        "has_seats": "10.08 еду в Хабаровск. 2 места. Выезд в 9:00",
-        "needs_seats": "Ищу попутку в Николаевск на 12.08"
-    }
-}
-
-# --- 5. ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
+# ========== Вспомогательные функции ==========
 def validate_phone(phone: str) -> bool:
     clean_phone = re.sub(r'[^\d+]', '', phone)
     return bool(re.match(r'^(\+7|8)\d{10}$', clean_phone))
 
 async def load_bad_words() -> List[str]:
-    try:
-        async with open(config.BAD_WORDS_FILE, 'r', encoding='utf-8') as f:
-            content = await f.read()
-        return [word.strip() for line in content.splitlines() for word in line.split(',') if word.strip()]
-    except FileNotFoundError:
-        logger.warning("Файл bad_words.txt не найден. Используются значения по умолчанию.")
-        return config.DEFAULT_BAD_WORDS
-    except Exception as e:
-        logger.error(f"Ошибка загрузки bad_words.txt: {e}")
-        return config.DEFAULT_BAD_WORDS
+    bad_words_file = Path("bad_words.txt")
+    default_words = ["хуй", "пизда", "блять", "блядь", "ебать", "сука"]
+    if bad_words_file.exists():
+        try:
+            with bad_words_file.open('r', encoding='utf-8') as f:
+                return [word.strip() for line in f for word in line.split(',') if word.strip()]
+        except Exception as e:
+            logger.warning(f"Ошибка загрузки bad_words.txt: {e}")
+    return default_words
 
 async def censor_text(text: str) -> tuple[str, bool]:
     bad_words = await load_bad_words()
     censored = text
     has_bad = False
     for word in bad_words:
-        try:
-            if re.search(re.escape(word), censored, re.IGNORECASE):
-                has_bad = True
-                censored = re.sub(re.escape(word), '***', censored, flags=re.IGNORECASE)
-        except re.error:
-            continue
+        if re.search(re.escape(word), censored, re.IGNORECASE):
+            has_bad = True
+            censored = re.sub(re.escape(word), '***', censored, flags=re.IGNORECASE)
     return censored, has_bad
 
-# --- 6. ОБРАБОТЧИКИ ---
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+# ========== Обработчики ==========
+async def safe_reply_text(update: Update, text: str, **kwargs):
+    try:
+        await update.message.reply_text(text, **kwargs)
+    except Exception as e:
+        logger.error(f"Ошибка отправки сообщения: {e}")
+
+async def safe_edit_message_text(query, text, **kwargs):
+    try:
+        await query.edit_message_text(text, **kwargs)
+    except Exception as e:
+        logger.error(f"Ошибка редактирования сообщения: {e}")
+
+async def start_command(update: Update, context: CallbackContext) -> str:
     keyboard = [
         [InlineKeyboardButton(f"{info['icon']} {info['name']}", callback_data=key)]
         for key, info in REQUEST_TYPES.items()
     ]
-    await update.message.reply_text(
+    await safe_reply_text(
+        update,
         "👋 Здравствуйте!\nВыберите, что хотите отправить:",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
-    return "TYPE_SELECTION"
+    return TYPE_SELECTION
 
-async def handle_type_selection(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def handle_type_selection(update: Update, context: CallbackContext) -> str:
     query = update.callback_query
     await query.answer()
     request_type = query.data
     context.user_data["type"] = request_type
 
     if request_type == "carpool":
-        # Показываем подтипы попутки (без эмодзи)
         keyboard = [
             [InlineKeyboardButton(name, callback_data=f"carpool_{key}")]
             for key, name in CARPOOL_SUBTYPES.items()
         ] + BACK_BUTTON
-        await query.edit_message_text(
+        await safe_edit_message_text(
+            query,
             "Выберите тип попутки:",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
-        return "CARPOOL_SUBTYPE"
+        return CARPOOL_SUBTYPE
     elif request_type == "news":
-        await query.edit_message_text(
+        await safe_edit_message_text(
+            query,
             "Введите ваш контактный телефон (формат: +7... или 8...):",
             reply_markup=InlineKeyboardMarkup(BACK_BUTTON)
         )
-        return "NEWS_PHONE_INPUT"
+        return NEWS_PHONE_INPUT
     else:
-        await query.edit_message_text("Временно недоступно. Попробуйте позже.", reply_markup=InlineKeyboardMarkup(BACK_BUTTON))
+        await safe_edit_message_text(
+            query,
+            "Временно недоступно. Попробуйте позже.",
+            reply_markup=InlineKeyboardMarkup(BACK_BUTTON)
+        )
         return ConversationHandler.END
 
-async def handle_carpool_subtype(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def handle_carpool_subtype(update: Update, context: CallbackContext) -> str:
     query = update.callback_query
     await query.answer()
     subtype_key = query.data.replace("carpool_", "")
     context.user_data["subtype"] = subtype_key
 
     example = EXAMPLE_TEXTS["carpool"].get(subtype_key, "")
-    await query.edit_message_text(
-        f"Введите текст заявки (до {config.MAX_TEXT_LENGTH} символов).\nПример: {example}",
+    await safe_edit_message_text(
+        query,
+        f"Введите текст заявки (до {MAX_TEXT_LENGTH} символов).\nПример: {example}",
         reply_markup=InlineKeyboardMarkup(BACK_BUTTON)
     )
-    return "CARPOOL_TEXT_INPUT"
+    return CARPOOL_TEXT_INPUT
 
-async def handle_carpool_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def handle_carpool_text(update: Update, context: CallbackContext) -> str:
     text = update.message.text.strip()
-    if len(text) > config.MAX_TEXT_LENGTH:
-        await update.message.reply_text(f"Слишком длинный текст. Максимум: {config.MAX_TEXT_LENGTH} символов.")
-        return "CARPOOL_TEXT_INPUT"
+    if len(text) > MAX_TEXT_LENGTH:
+        await safe_reply_text(update, f"Слишком длинный текст. Максимум: {MAX_TEXT_LENGTH} символов.")
+        return CARPOOL_TEXT_INPUT
 
     censored_text, has_bad = await censor_text(text)
     if has_bad:
-        await update.message.reply_text("❌ Ваше сообщение содержит запрещённые слова. Заявка не отправлена.")
+        await safe_reply_text(update, "❌ Ваше сообщение содержит запрещённые слова. Заявка не отправлена.")
         return ConversationHandler.END
 
     phone = context.user_data.get("phone")
     if not phone:
-        await update.message.reply_text("Введите телефон:")
-        return "CARPOOL_PHONE_INPUT"
+        await safe_reply_text(update, "Введите телефон:")
+        return CARPOOL_PHONE_INPUT
 
     # Автопубликация
     try:
         message = f"🚗 <b>Попутка</b>\n{censored_text}\n📞 <b>Телефон:</b> {phone}\n#ПопуткаНиколаевск"
         await context.bot.send_message(
-            chat_id=config.CHANNEL_ID,
+            chat_id=CHANNEL_ID,
             text=message,
             parse_mode="HTML"
         )
-        await update.message.reply_text("✅ Ваша заявка опубликована!")
+        await safe_reply_text(update, "✅ Ваша заявка опубликована!")
     except Exception as e:
         logger.error(f"Ошибка публикации попутки: {e}")
-        await update.message.reply_text("❌ Не удалось опубликовать. Попробуйте позже.")
+        await safe_reply_text(update, "❌ Не удалось опубликовать. Попробуйте позже.")
 
     context.user_data.clear()
     return ConversationHandler.END
 
-# --- 7. КОМАНДА /pending (восстановление заявок) ---
-async def pending_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat.id != config.ADMIN_CHAT_ID:
+async def pending_command(update: Update, context: CallbackContext) -> None:
+    if update.effective_chat.id != ADMIN_CHAT_ID:
+        await safe_reply_text(update, "❌ Эта команда доступна только администратору.")
         return
 
     with get_db_connection() as conn:
@@ -244,7 +281,7 @@ async def pending_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         apps = cur.fetchall()
 
     if not apps:
-        await update.message.reply_text("📭 Нет заявок в очереди.")
+        await safe_reply_text(update, "📭 Нет заявок в очереди.")
         return
 
     for app in apps:
@@ -255,55 +292,88 @@ async def pending_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]])
         try:
             await context.bot.send_message(
-                chat_id=config.ADMIN_CHAT_ID,
+                chat_id=ADMIN_CHAT_ID,
                 text=app_text,
                 reply_markup=keyboard
             )
         except Exception as e:
             logger.error(f"Не удалось отправить заявку #{app['id']}: {e}")
 
-# --- 8. ЗАПУСК БОТА ---
-def main():
+# ========== Инициализация бота ==========
+async def initialize_bot():
+    global application
+    async with application_lock:
+        if application is not None:
+            return
+
+        application = Application.builder().token(TOKEN).build()
+
+        conv_handler = ConversationHandler(
+            entry_points=[CommandHandler("start", start_command)],
+            states={
+                TYPE_SELECTION: [CallbackQueryHandler(handle_type_selection)],
+                CARPOOL_SUBTYPE: [CallbackQueryHandler(handle_carpool_subtype)],
+                CARPOOL_TEXT_INPUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_carpool_text)],
+                "back_to_start": [CallbackQueryHandler(start_command, pattern="^back_to_start$")]
+            },
+            fallbacks=[CommandHandler("cancel", lambda u, c: None)],
+            allow_reentry=True
+        )
+
+        application.add_handler(conv_handler)
+        application.add_handler(CommandHandler("pending", pending_command))
+
+        await application.initialize()
+        await application.start()
+        await application.bot.set_webhook(
+            url=WEBHOOK_URL,
+            secret_token=WEBHOOK_SECRET
+        )
+        logger.info("Бот инициализирован и установлен вебхук.")
+
+# ========== FastAPI приложение ==========
+app = FastAPI()
+
+@app.on_event("startup")
+async def startup_event():
     init_db()
-
-    app = (
-        Application.builder()
-        .token(config.TOKEN)
-        .connect_timeout(30.0)
-        .read_timeout(30.0)
-        .write_timeout(30.0)
-        .pool_timeout(30.0)
-        .build()
+    await initialize_bot()
+    scheduler = AsyncIOScheduler(
+        jobstores={'default': SQLAlchemyJobStore(url='sqlite:///jobs.sqlite')},
+        executors={'default': AsyncIOExecutor()},
+        timezone=TIMEZONE
     )
-
-    conv_handler = ConversationHandler(
-        entry_points=[CommandHandler("start", start_command)],
-        states={
-            "TYPE_SELECTION": [CallbackQueryHandler(handle_type_selection)],
-            "CARPOOL_SUBTYPE": [CallbackQueryHandler(handle_carpool_subtype)],
-            "CARPOOL_TEXT_INPUT": [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_carpool_text)],
-            "CARPOOL_PHONE_INPUT": [MessageHandler(filters.TEXT & ~filters.COMMAND, lambda u, c: handle_carpool_text(u, c))],
-            "NEWS_PHONE_INPUT": [MessageHandler(filters.TEXT & ~filters.COMMAND, lambda u, c: None)],
-            "back_to_start": [CallbackQueryHandler(start_command, pattern="^back_to_start$")]
-        },
-        fallbacks=[CommandHandler("cancel", lambda u, c: None)],
-        allow_reentry=True
+    scheduler.add_job(
+        pending_command,
+        'interval',
+        minutes=5,
+        args=[None, None],
+        id='check_pending'
     )
+    scheduler.start()
+    BOT_STATE['running'] = True
+    BOT_STATE['start_time'] = datetime.now(TIMEZONE)
+    logger.info("FastAPI приложение запущено.")
 
-    app.add_handler(conv_handler)
-    app.add_handler(CommandHandler("pending", pending_command))
+@app.post("/webhook")
+async def webhook(request: Request):
+    global application
+    if application is None:
+        await initialize_bot()
 
-    # Повторная отправка заявок каждые 5 минут
-    job_queue = app.job_queue
-    job_queue.run_repeating(lambda c: pending_command(Update(0, None), c), interval=300, first=10)
-
-    logger.info("🚀 Бот запущен. Используйте /pending для восстановления заявок.")
-    app.run_polling(drop_pending_updates=True)
-
-if __name__ == "__main__":
     try:
-        main()
-    except Conflict:
-        logger.error("❌ Бот уже запущен.")
+        data = await request.json()
+        update = Update.de_json(data, application.bot)
+        await application.process_update(update)
+        return JSONResponse(status_code=200, content={"status": "ok"})
     except Exception as e:
-        logger.critical(f"❌ Критическая ошибка: {e}", exc_info=True)
+        logger.error(f"Ошибка обработки вебхука: {e}")
+        return JSONResponse(status_code=500, content={"status": "error"})
+
+@app.get("/")
+async def root():
+    return {"status": "running", "bot": BOT_STATE}
+
+# ========== Запуск (для локального тестирования) ==========
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=PORT)
