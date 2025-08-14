@@ -95,7 +95,7 @@ EXAMPLE_TEXTS = {
     RIDE_DATE_INPUT,
     RIDE_SEATS_INPUT,
     RIDE_PHONE_INPUT
-) = range(18)
+) = range(19)
 
 # ========== ТИПЫ ЗАПРОСОВ ==========
 REQUEST_TYPES = {
@@ -1043,3 +1043,4 @@ if __name__ == '__main__':
         uvicorn.run(app, host="0.0.0.0", port=PORT)
     else:
         main()
+
