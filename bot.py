@@ -201,7 +201,113 @@ def can_submit_request(user_id: int) -> bool:
         return count < 5
 
 # ========== Обработчики ==========
-async def safe_reply_text(update: Update, text: str, **kwargs):
+# ========== ФУНКЦИЯ ПРОВЕРКИ И ПУБЛИКАЦИИ ЗАЯВОК ==========
+async def check_pending_applications(application: Application):
+    """
+    Проверяет базу данных на наличие заявок, ожидающих публикации.
+    Вызывается планировщиком каждую минуту.
+    """
+    try:
+        with get_db_connection() as conn:
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+            # Находим заявки, которые одобрены, но еще не опубликованы
+            cur.execute("""
+                SELECT id, type, from_name, to_name, text, photo_id, publish_date, congrat_type
+                FROM applications
+                WHERE status = 'approved' AND published_at IS NULL
+            """)
+            pending_apps = cur.fetchall()
+
+        if not pending_apps:
+            logger.info("Нет заявок, ожидающих публикации.")
+            return
+
+        logger.info(f"Найдено {len(pending_apps)} заявок для публикации.")
+        bot = application.bot
+
+        for app in pending_apps:
+            app_id = app['id']
+            try:
+                # Формируем сообщение
+                if app['type'] == 'congrat':
+                    # Для поздравлений
+                    message = (
+                        f"🎉 <b>Поздравление</b>\n\n"
+                        f"{app['text']}\n\n"
+                        f"От {app['from_name']}"
+                    )
+                else:
+                    # Для объявлений и новостей
+                    message = (
+                        f"📢 <b>Объявление</b>\n\n"
+                        f"{app['text']}"
+                    )
+
+                if app['publish_date']:
+                    message += f"\n\n📅 Опубликовано для даты: {app['publish_date']}"
+
+                message += f"\n\n#НебольшойМир:Николаевск"
+
+                # Публикуем
+                if app['photo_id']:
+                    await bot.send_photo(
+                        chat_id=CHANNEL_ID,
+                        photo=app['photo_id'],
+                        caption=message,
+                        parse_mode="HTML"
+                    )
+                else:
+                    await bot.send_message(
+                        chat_id=CHANNEL_ID,
+                        text=message,
+                        parse_mode="HTML"
+                    )
+
+                # Отмечаем как опубликованную
+                mark_application_as_published(app_id)
+                logger.info(f"Заявка #{app_id} успешно опубликована.")
+
+            except Exception as e:
+                logger.error(f"Ошибка публикации заявки #{app_id}: {e}", exc_info=True)
+                # Не отмечаем как опубликованную — попробуем снова
+
+    except Exception as e:
+        logger.error(f"Критическая ошибка при проверке заявок: {e}", exc_info=True)
+
+def mark_application_as_published(app_id: int):
+    """Отмечает заявку как опубликованную."""
+    try:
+        with get_db_connection() as conn:
+            conn.execute("""
+                UPDATE applications
+                SET published_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+            """, (app_id,))
+            conn.commit()
+    except Exception as e:
+        logger.error(f"Ошибка при обновлении статуса заявки #{app_id}: {e}")
+# ========== ОТПРАВКА НОВОСТИ АДМИНУ ==========
+async def notify_admin_new_application(bot: Bot, app_id: int, app_data: dict):
+    """Отправляет новость админу на модерацию."""
+    message = (
+        f"🗞️ <b>Новость от жителя</b>\n\n"
+        f"{app_data['text']}\n\n"
+        f"📞 Телефон: {app_data['phone_number']}"
+    )
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Одобрить", callback_data=f"approve_{app_id}"),
+         InlineKeyboardButton("❌ Отклонить", callback_data=f"reject_{app_id}")]
+    ])
+    try:
+        await bot.send_message(
+            chat_id=ADMIN_CHAT_ID,
+            text=message,
+            reply_markup=keyboard,
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        logger.error(f"Не удалось отправить новость #{app_id} админу: {e}")async def safe_reply_text(update: Update, text: str, **kwargs):
     try:
         await update.message.reply_text(text, **kwargs)
     except Exception as e:
@@ -431,3 +537,4 @@ async def root():
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=PORT)
+
