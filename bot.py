@@ -304,11 +304,15 @@ async def safe_edit_message_text(query, text: str, **kwargs):
 
 async def start_command(update: Update, context: CallbackContext) -> int:
     context.user_data.clear()
+    # Создаём клавиатуру: сначала "Попутка", потом остальные типы
     keyboard = [
-        [InlineKeyboardButton("🚗 Попутка", callback_data="carpool")],
-        [InlineKeyboardButton(f"{info['icon']} {info['name']}", callback_data=key)]
-        for key, info in REQUEST_TYPES.items()
+        [InlineKeyboardButton("🚗 Попутка", callback_data="carpool")]
     ]
+    # Добавляем остальные типы из REQUEST_TYPES
+    for key, info in REQUEST_TYPES.items():
+        button = InlineKeyboardButton(f"{info['icon']} {info['name']}", callback_data=key)
+        keyboard.append([button])
+    
     await safe_reply_text(
         update,
         "👋 Здравствуйте!\nВыберите, что хотите отправить в канал:",
@@ -654,3 +658,4 @@ async def root():
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=PORT)
+
