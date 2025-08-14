@@ -218,7 +218,25 @@ def can_submit_request(user_id: int) -> bool:
 
 # ========== Функции для базы данных ==========
 def add_application(data: dict) -> Optional[int]:
+    """
+    Добавляет заявку в базу данных.
+    Все отсутствующие ключи автоматически заменяются на None.
+    """
     try:
+        # Полный список ключей, которые ждёт база
+        required_keys = [
+            "user_id", "username", "type", "subtype", "from_name", "to_name",
+            "text", "photo_id", "phone_number", "publish_date", "congrat_type"
+        ]
+
+        # Заполняем отсутствующие ключи значением None
+        safe_data = {key: data.get(key, None) for key in required_keys}
+
+        # Логируем пустые поля (кроме username, subtype, photo_id, phone_number — они могут быть None)
+        for key in required_keys:
+            if safe_data[key] is None and key not in ["username", "subtype", "photo_id", "phone_number"]:
+                logger.warning(f"Поле '{key}' пустое при добавлении заявки.")
+
         with get_db_connection() as conn:
             cur = conn.cursor()
             cur.execute("""
@@ -228,25 +246,26 @@ def add_application(data: dict) -> Optional[int]:
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
-                data['user_id'],
-                data.get('username'),
-                data['type'],
-                data.get('subtype'),
-                data.get('from_name'),
-                data.get('to_name'),
-                data['text'],
-                data.get('photo_id'),
-                data.get('phone_number'),
-                data.get('publish_date'),
-                data.get('congrat_type')
+                safe_data["user_id"],
+                safe_data["username"],
+                safe_data["type"],
+                safe_data["subtype"],
+                safe_data["from_name"],
+                safe_data["to_name"],
+                safe_data["text"],
+                safe_data["photo_id"],
+                safe_data["phone_number"],
+                safe_data["publish_date"],
+                safe_data["congrat_type"]
             ))
             app_id = cur.lastrowid
             conn.commit()
+            logger.info(f"Заявка успешно добавлена с ID {app_id}")
             return app_id
+
     except Exception as e:
         logger.error(f"Ошибка добавления заявки: {e}", exc_info=True)
         return None
-
 
 def get_application_details(app_id: int) -> Optional[sqlite3.Row]:
     try:
@@ -995,4 +1014,5 @@ async def root():
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=PORT)
+
 
