@@ -739,7 +739,31 @@ async def complete_request(update: Update, context: CallbackContext) -> int:
 
     context.user_data.clear()
     return ConversationHandler.END
+async def notify_admin_new_application(bot: Bot, app_id: int, app_data: dict):
+    """Отправляет админу уведомление о новой заявке."""
+    try:
+        text = f"📥 Новая заявка #{app_id}\n"
+        text += f"Тип: {REQUEST_TYPES.get(app_data['type'], {}).get('name', app_data['type'])}\n"
+        if app_data.get('subtype'):
+            text += f"Подтип: {app_data['subtype']}\n"
+        if app_data.get('from_name'):
+            text += f"От: {app_data['from_name']}\n"
+        if app_data.get('to_name'):
+            text += f"Кому: {app_data['to_name']}\n"
+        text += f"Текст:\n{app_data['text']}\n"
+        if app_data.get('phone_number'):
+            text += f"📞 Телефон: {app_data['phone_number']}\n"
 
+        # Кнопки для админа
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Одобрить", callback_data=f"approve_{app_id}"),
+             InlineKeyboardButton("❌ Отклонить", callback_data=f"reject_{app_id}")]
+        ])
+
+        await bot.send_message(chat_id=ADMIN_CHAT_ID, text=text, reply_markup=keyboard)
+    except Exception as e:
+        logger.error(f"Ошибка отправки уведомления админу для заявки #{app_id}: {e}")
+        
 async def publish_to_channel(app_id: int, bot: Bot):
     """Публикует заявку в канал."""
     try:
@@ -1019,6 +1043,7 @@ async def root():
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=PORT)
+
 
 
 
