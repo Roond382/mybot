@@ -1,354 +1,138 @@
 import os
-import sys
-import logging
-import sqlite3
 import re
+import sqlite3
+import hashlib
+import logging
 import asyncio
-from datetime import datetime, timedelta
-from typing import Dict, Any, Optional, Tuple, List
-# FastAPI импорты
-from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import JSONResponse
-import uvicorn
-# Сторонние библиотеки
-import pytz
+from pathlib import Path
+from typing import Optional, Dict, List
 from dotenv import load_dotenv
-import aiofiles
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-# Telegram Bot импорты
-from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.error import TelegramError
-from telegram.ext import (
-    Application,
-    CallbackContext,
-    ConversationHandler,
-    CommandHandler,
-    MessageHandler,
-    CallbackQueryHandler,
-    filters,
+from telegram import (
+    InlineKeyboardButton, InlineKeyboardMarkup, Update, BotCommand
 )
-# Загрузка переменных окружения
-load_dotenv()
-# Создание экземпляра FastAPI
-app = FastAPI()
-# ========== КОНФИГУРАЦИЯ ==========
-PORT = int(os.environ.get('PORT', 10000))
-WEBHOOK_URL = os.getenv('WEBHOOK_URL', '')
-TOKEN = os.getenv('TELEGRAM_TOKEN')
-WEBHOOK_SECRET = os.getenv('WEBHOOK_SECRET')
-CHANNEL_ID = int(os.getenv('CHANNEL_ID')) if os.getenv('CHANNEL_ID') else None
-ADMIN_CHAT_ID = int(os.getenv('ADMIN_CHAT_ID')) if os.getenv('ADMIN_CHAT_ID') else None
-TIMEZONE = pytz.timezone('Europe/Moscow')
-WORKING_HOURS = (0, 23)
-WORK_ON_WEEKENDS = True
-# ========== КОНСТАНТЫ ==========
-BACK_BUTTON = [[InlineKeyboardButton("🔙 Вернуться в начало", callback_data="back_to_start")]]
-DB_FILE = 'db.sqlite'
-BAD_WORDS_FILE = 'bad_words.txt'
-DEFAULT_BAD_WORDS = ["хуй", "пизда", "блять", "блядь", "ебать", "сука"]
-MAX_NAME_LENGTH = 50
-MAX_TEXT_LENGTH = 4000
-MAX_CONGRAT_TEXT_LENGTH = 500
-MAX_ANNOUNCE_NEWS_TEXT_LENGTH = 300
-CHANNEL_NAME = "Небольшой Мир: Николаевск"
-# ========== ПРИМЕРЫ ТЕКСТОВ ==========
-EXAMPLE_TEXTS = {
-    "sender_name": "Иванов Виталий",
-    "recipient_name": "коллектив детсада 'Солнышко'",
-    "congrat": {
-        "custom": "Дорогая мама! Поздравляю с Днем рождения! Желаю здоровья и счастья!"
-    },
-    "announcement": {
-        "ride": "10.02 еду в Волгоград. 2 места. Выезд в 8:00",
-        "demand_offer": "Ищу работу водителя. Опыт 5 лет.",
-        "lost": "Найден ключ у магазина 'Продукты'. Опознать по брелку."
-    },
-    "news": "15.01 в нашем городе открыли новую детскую площадку!"
-}
-# ========== СОСТОЯНИЯ ДИАЛОГА ==========
-(
-    TYPE_SELECTION,
-    SENDER_NAME_INPUT,
-    RECIPIENT_NAME_INPUT,
-    CONGRAT_HOLIDAY_CHOICE,
-    CUSTOM_CONGRAT_MESSAGE_INPUT,
-    CONGRAT_DATE_CHOICE, # Новое состояние для выбора даты
-    CONGRAT_DATE_INPUT, # Новое состояние для ввода даты
-    ANNOUNCE_SUBTYPE_SELECTION,
-    ANNOUNCE_TEXT_INPUT,
-    PHONE_INPUT,  # Новое состояние для ввода телефона
-    WAIT_CENSOR_APPROVAL,
-    NEWS_PHONE_INPUT, # Новое состояние для ввода телефона в новости
-    NEWS_TEXT_INPUT   # Новое состояние для ввода текста/фото в новости
-) = range(13)
-# ========== ТИПЫ ЗАПРОСОВ ==========
-REQUEST_TYPES = {
-    "congrat": {"name": "Поздравление", "icon": "🎉"},
-    "announcement": {"name": "Объявление", "icon": "📢"},
-    "news": {"name": "Новость от жителя", "icon": "🗞️"}
-}
-# ========== ПОДТИПЫ ОБЪЯВЛЕНИЙ ==========
-# Изменено название кнопки
-ANNOUNCE_SUBTYPES = {
-    "ride": "🚗 Попутка",
-    "demand_offer": "🤝 Спрос и предложения", # Изменено
-    "lost": "🔍 Потеряли/Нашли"
-}
-# ========== ПРАЗДНИКИ ==========
-# Праздники всегда отображаются
-HOLIDAYS = {
-    "🎄 Новый год": "01-01",
-    "🪖 23 Февраля": "02-23",
-    "💐 8 Марта": "03-08",
-    "🏅 9 Мая": "05-09",
-    "🇷🇺 12 Июня": "06-12",
-    "🤝 4 Ноября": "11-04"
-}
-# Обновлены шаблоны поздравлений
-HOLIDAY_TEMPLATES = {
-    "🎄 Новый год": "С Новым годом! ✨ Пусть каждый день нового года будет наполнен радостью, теплом и верой в лучшее!",
-    "🪖 23 Февраля": "С Днём защитника Отечества! 💪 Крепкого здоровья, силы духа и мирного неба над головой!",
-    "💐 8 Марта": "С 8 Марта! 🌸 Пусть в вашей жизни будет много тепла, красоты и счастливых мгновений!",
-    "🏅 9 Мая": "С Днём Победы! 🇷🇺 Мы помним подвиг и радуемся великой Победе! Пусть в вашем доме всегда будет мир, радость и свет!",
-    "🇷🇺 12 Июня": "С Днём России! ❤️ Желаем гордости за нашу страну, благополучия и уверенности в будущем!",
-    "🤝 4 Ноября": "С Днём народного единства! 🤝 Пусть в вашей жизни будет согласие, доброта и взаимопонимание!"
-}
-# ========== НАСТРОЙКА ЛОГИРОВАНИЯ ==========
+from telegram.ext import (
+    Application, CallbackQueryHandler, ContextTypes, CommandHandler,
+    MessageHandler, filters, ConversationHandler
+)
+from telegram.error import Conflict, RetryAfter, TimedOut, NetworkError
+
+# --- 1. НАСТРОЙКА ЛОГИРОВАНИЯ ---
 logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('bot.log'),
+        logging.FileHandler("bot_final.log", encoding="utf-8"),
         logging.StreamHandler()
     ]
 )
 logger = logging.getLogger(__name__)
-# ========== ГЛОБАЛЬНОЕ СОСТОЯНИЕ БОТА ==========
-BOT_STATE = {
-    'running': False,
-    'start_time': None,
-    'last_activity': None
-}
 
-# ========== ГЛОБАЛЬНАЯ ПЕРЕМЕННАЯ ДЛЯ ПРИЛОЖЕНИЯ ==========
-# ✅ 1. Сделай application явно asyncio-safe:
-application_lock = asyncio.Lock()
-application: Optional[Application] = None
+# --- 2. КОНФИГУРАЦИЯ ---
+class Config:
+    def __init__(self):
+        BASE_DIR = Path(__file__).resolve().parent
+        load_dotenv(BASE_DIR / ".env")
+        self.BASE_DIR = BASE_DIR
+        self.DB_FILE = BASE_DIR / "db.sqlite"
+        self.TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+        self.ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID", 0))
+        self.CHANNEL_ID = os.getenv("CHANNEL_ID")
+        self.BAD_WORDS_FILE = BASE_DIR / "bad_words.txt"
+        self.DEFAULT_BAD_WORDS = ["хуй", "пизда", "блять", "блядь", "ебать", "сука"]
+        self.WORKING_HOURS = (0, 23)
+        self.WORK_ON_WEEKENDS = True
+        self.MAX_TEXT_LENGTH = 4000
 
-# ========== БАЗА ДАННЫХ ==========
-def cleanup_old_applications(days: int = 30) -> None:
-    """Очищает старые заявки старше указанного количества дней."""
-    try:
-        with get_db_connection() as conn:
-            conn.execute("""
-                DELETE FROM applications 
-                WHERE created_at < datetime('now', ?) 
-                AND status IN ('published', 'rejected')
-            """, (f"-{days} days",))
-            conn.commit()
-            logger.info(f"Очистка БД: удалены заявки старше {days} дней")
-    except sqlite3.Error as e:
-        logger.error(f"Ошибка очистки БД: {e}", exc_info=True)
+        if not all([self.TOKEN, self.ADMIN_CHAT_ID, self.CHANNEL_ID]):
+            raise ValueError("Ключевые переменные Telegram не установлены!")
 
+try:
+    config = Config()
+except ValueError as e:
+    logger.critical(f"Критическая ошибка конфигурации: {e}")
+    exit(1)
+
+# --- 3. УПРАВЛЕНИЕ БАЗОЙ ДАННЫХ ---
 def get_db_connection() -> sqlite3.Connection:
-    """Устанавливает соединение с базой данных с настройками."""
-    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
+    conn = sqlite3.connect(config.DB_FILE, check_same_thread=False)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA foreign_keys=ON")
     return conn
 
 def init_db():
-    """Инициализирует таблицы базы данных."""
-    try:
-        with get_db_connection() as conn:
-            # Создаем таблицу applications с полем phone_number
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS applications (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id INTEGER NOT NULL,
-                    username TEXT,
-                    type TEXT NOT NULL,
-                    subtype TEXT,
-                    from_name TEXT,
-                    to_name TEXT,
-                    text TEXT NOT NULL,
-                    photo_id TEXT,
-                    phone_number TEXT,
-                    status TEXT DEFAULT 'pending',
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    publish_date DATE,
-                    published_at TIMESTAMP,
-                    congrat_type TEXT
-                )
-            """)
-            # Добавляем поле phone_number если его нет (для совместимости)
-            try:
-                conn.execute("ALTER TABLE applications ADD COLUMN phone_number TEXT")
-                conn.commit()
-            except sqlite3.OperationalError:
-                pass  # Поле уже существует
-            # Создаем индекс для оптимизации запросов
-            conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_approved_unpublished
-                ON applications(status, published_at)
-                WHERE status = 'approved' AND published_at IS NULL
-            """)
+    with get_db_connection() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS applications (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                username TEXT,
+                type TEXT NOT NULL,
+                subtype TEXT,
+                from_name TEXT,
+                to_name TEXT,
+                text TEXT,
+                photo_id TEXT,
+                phone_number TEXT,
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                published_at TIMESTAMP,
+                publish_date DATE
+            )
+        """)
+        # Создаем индекс для быстрого поиска заявок на модерации
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_pending 
+            ON applications (status) WHERE status = 'pending'
+        """)
+        # Добавляем поле phone_number, если его нет
+        try:
+            conn.execute("ALTER TABLE applications ADD COLUMN phone_number TEXT")
             conn.commit()
-            logger.info("База данных успешно инициализирована")
-    except sqlite3.Error as e:
-        logger.error(f"Ошибка инициализации БД: {e}", exc_info=True)
-        raise
+            logger.info("Добавлено поле phone_number в таблицу applications")
+        except sqlite3.OperationalError:
+            pass  # Поле уже существует
+        logger.info("База данных инициализирована.")
 
-def add_application(data: Dict[str, Any]) -> Optional[int]:
-    """Добавляет новую заявку в базу данных."""
-    try:
-        with get_db_connection() as conn:
-            cur = conn.cursor()
-            cur.execute("""
-                INSERT INTO applications
-                (user_id, username, type, subtype, from_name, to_name, text, photo_id, phone_number, publish_date, congrat_type)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    data['user_id'],
-                    data.get('username'),
-                    data['type'],
-                    data.get('subtype'),
-                    data.get('from_name'),
-                    data.get('to_name'),
-                    data['text'],
-                    data.get('photo_id'),
-                    data.get('phone_number'),  # Новое поле
-                    data.get('publish_date'),
-                    data.get('congrat_type')
-                ))
-            app_id = cur.lastrowid
-            conn.commit()
-            return app_id
-    except sqlite3.Error as e:
-        logger.error(f"Ошибка добавления заявки: {e}\nДанные: {data}", exc_info=True)
-        return None
+# --- 4. КОНСТАНТЫ И ТИПЫ ЗАЯВОК ---
+BACK_BUTTON = [[InlineKeyboardButton("🔙 Вернуться в начало", callback_data="back_to_start")]]
 
-def get_application_details(app_id: int) -> Optional[sqlite3.Row]:
-    """Получает детали заявки по ID."""
-    try:
-        with get_db_connection() as conn:
-            cur = conn.cursor()
-            cur.execute("SELECT * FROM applications WHERE id = ?", (app_id,))
-            return cur.fetchone()
-    except sqlite3.Error as e:
-        logger.error(f"Ошибка получения заявки #{app_id}: {e}", exc_info=True)
-        return None
+REQUEST_TYPES = {
+    "congrat": {"name": "🎉 Поздравление", "icon": "🎉"},
+    "announcement": {"name": "📢 Объявление", "icon": "📢"},
+    "news": {"name": "🗞️ Новость от жителя", "icon": "🗞️"},
+    "carpool": {"name": "🚗 Попутка", "icon": "🚗"},
+}
 
-def get_approved_unpublished_applications() -> list:
-    """Получает одобренные, но не опубликованные заявки."""
-    try:
-        with get_db_connection() as conn:
-            cur = conn.cursor()
-            cur.execute("""
-            SELECT * FROM applications
-            WHERE status = 'approved' AND published_at IS NULL
-            """)
-            return cur.fetchall()
-    except sqlite3.Error as e:
-        logger.error(f"Ошибка получения заявок: {e}", exc_info=True)
-        return []
+# Подтипы для "Попутка" (без эмодзи внутри)
+CARPOOL_SUBTYPES = {
+    "has_seats": "Есть места",
+    "needs_seats": "Нужны места"
+}
 
-def update_application_status(app_id: int, status: str) -> bool:
-    """Обновляет статус заявки."""
-    try:
-        with get_db_connection() as conn:
-            conn.execute("UPDATE applications SET status = ? WHERE id = ?", (status, app_id))
-            conn.commit()
-            return True
-    except sqlite3.Error as e:
-        logger.error(f"Ошибка обновления статуса заявки #{app_id}: {e}", exc_info=True)
-        return False
+EXAMPLE_TEXTS = {
+    "carpool": {
+        "has_seats": "10.08 еду в Хабаровск. 2 места. Выезд в 9:00",
+        "needs_seats": "Ищу попутку в Николаевск на 12.08"
+    }
+}
 
-def mark_application_as_published(app_id: int) -> bool:
-    """Помечает заявку как опубликованную."""
-    try:
-        with get_db_connection() as conn:
-            conn.execute("""
-            UPDATE applications
-            SET published_at = CURRENT_TIMESTAMP, status = 'published'
-            WHERE id = ?
-            """, (app_id,))
-            conn.commit()
-            return True
-    except sqlite3.Error as e:
-        logger.error(f"Ошибка публикации заявки #{app_id}: {e}", exc_info=True)
-        return False
-
-def can_submit_request(user_id: int) -> bool:
-    """Проверяет, может ли пользователь отправить заявку (лимит)."""
-    try:
-        with get_db_connection() as conn:
-            count = conn.execute("""
-                SELECT COUNT(*) FROM applications 
-                WHERE user_id = ? AND created_at > datetime('now', '-1 hour')
-            """, (user_id,)).fetchone()[0]
-            return count < 5
-    except sqlite3.Error as e:
-        logger.error(f"Ошибка проверки лимита заявок: {e}")
-        return True
-
-def is_working_hours() -> bool:
-    """Проверяет, рабочее ли время."""
-    current_time = datetime.now(TIMEZONE)
-    current_hour = current_time.hour
-    current_weekday = current_time.weekday()
-    if not WORK_ON_WEEKENDS and current_weekday >= 5:
-        return False
-    return WORKING_HOURS[0] <= current_hour <= WORKING_HOURS[1]
-
-def get_uptime() -> str:
-    """Возвращает время работы бота."""
-    if not BOT_STATE.get('start_time'):
-        return "N/A"
-    uptime = datetime.now(TIMEZONE) - BOT_STATE['start_time']
-    days, remainder = divmod(uptime.total_seconds(), 86400)
-    hours, remainder = divmod(remainder, 3600)
-    minutes, _ = divmod(remainder, 60)
-    return f"{int(days)}д {int(hours)}ч {int(minutes)}м"
-
-def validate_name(name: str) -> bool:
-    """Валидирует имя."""
-    if not name or len(name) < 2 or len(name) > MAX_NAME_LENGTH:
-        return False
-    return bool(re.match(r'^[a-zA-Zа-яА-ЯёЁ\s\-]+$', name))
-
+# --- 5. ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
 def validate_phone(phone: str) -> bool:
-    """Валидирует номер телефона."""
     clean_phone = re.sub(r'[^\d+]', '', phone)
     return bool(re.match(r'^(\+7|8)\d{10}$', clean_phone))
 
-# Функция is_holiday_active больше не используется, но оставлена для совместимости
-def is_holiday_active(holiday_date_str: str) -> bool:
-    """Проверяет, активен ли праздник (в пределах 5 дней)."""
-    try:
-        current_year = datetime.now().year
-        holiday_date = datetime.strptime(f"{current_year}-{holiday_date_str}", "%Y-%m-%d").date()
-        today = datetime.now().date()
-        return (holiday_date - timedelta(days=5)) <= today <= (holiday_date + timedelta(days=5))
-    except ValueError:
-        return False
-
 async def load_bad_words() -> List[str]:
-    """Загружает список запрещенных слов."""
     try:
-        async with aiofiles.open(BAD_WORDS_FILE, 'r', encoding='utf-8') as f:
+        async with open(config.BAD_WORDS_FILE, 'r', encoding='utf-8') as f:
             content = await f.read()
-            return [word.strip() for line in content.splitlines() for word in line.split(',') if word.strip()]
+        return [word.strip() for line in content.splitlines() for word in line.split(',') if word.strip()]
     except FileNotFoundError:
-        logger.warning("Файл с запрещенными словами не найден. Используются значения по умолчанию.")
-        return DEFAULT_BAD_WORDS
+        logger.warning("Файл bad_words.txt не найден. Используются значения по умолчанию.")
+        return config.DEFAULT_BAD_WORDS
     except Exception as e:
-        logger.error(f"Ошибка загрузки запрещенных слов: {e}", exc_info=True)
-        return DEFAULT_BAD_WORDS
+        logger.error(f"Ошибка загрузки bad_words.txt: {e}")
+        return config.DEFAULT_BAD_WORDS
 
-async def censor_text(text: str) -> Tuple[str, bool]:
-    """Цензурирует текст и возвращает результат."""
+async def censor_text(text: str) -> tuple[str, bool]:
     bad_words = await load_bad_words()
     censored = text
     has_bad = False
@@ -357,960 +141,169 @@ async def censor_text(text: str) -> Tuple[str, bool]:
             if re.search(re.escape(word), censored, re.IGNORECASE):
                 has_bad = True
                 censored = re.sub(re.escape(word), '***', censored, flags=re.IGNORECASE)
-        except re.error as e:
-            logger.error(f"Ошибка цензуры слова '{word}': {e}")
+        except re.error:
+            continue
     return censored, has_bad
 
-async def safe_send_message(bot: Bot, chat_id: int, text: str, **kwargs) -> bool:
-    """Отправляет сообщение с обработкой ошибок."""
-    try:
-        await bot.send_message(chat_id=chat_id, text=text, **kwargs)
-        return True
-    except TelegramError as e:
-        logger.warning(f"Ошибка отправки сообщения в {chat_id}: {e}")
-    except Exception as e:
-        logger.error(f"Неожиданная ошибка отправки в {chat_id}: {e}", exc_info=True)
-    return False
-
-async def safe_edit_message_text(query, text: str, **kwargs):
-    """Редактирует сообщение с обработкой ошибок."""
-    if not query or not query.message:
-        return
-    try:
-        await query.edit_message_text(text=text, **kwargs)
-    except TelegramError as e:
-        if "message is not modified" not in str(e).lower():
-            logger.warning(f"Ошибка редактирования сообщения: {e}")
-    except Exception as e:
-        logger.error(f"Неожиданная ошибка редактирования: {e}", exc_info=True)
-
-async def safe_reply_text(update: Update, text: str, **kwargs):
-    """Отвечает на сообщение с обработкой ошибок."""
-    if update.callback_query:
-        await safe_edit_message_text(update.callback_query, text, **kwargs)
-    elif update.message:
-        try:
-            await update.message.reply_text(text=text, **kwargs)
-        except TelegramError as e:
-            logger.warning(f"Ошибка ответа на сообщение: {e}")
-        except Exception as e:
-            logger.error(f"Неожиданная ошибка ответа: {e}", exc_info=True)
-
-# ✅ Исправленная функция уведомления администратора с фото
-# ✅ Новости теперь отправляются админу сразу, без модерации
-async def notify_admin_new_application(bot: Bot, app_id: int, app_details: dict):
-    """Уведомляет администратора о новой заявке с учётом наличия фото."""
-    if not ADMIN_CHAT_ID:
-        return
-
-    app_type = REQUEST_TYPES.get(app_details['type'], {}).get('name', 'Заявка')
-    subtype = ANNOUNCE_SUBTYPES.get(app_details['subtype'], '') if app_details.get('subtype') else ''
-    full_type = f"{app_type}" + (f" ({subtype})" if subtype else '')
-    
-    # Если это новость, отправляем её сразу без кнопок
-    if app_details['type'] == 'news':
-        has_photo = "✅" if app_details.get('photo_id') else "❌"
-        phone = f"\n• Телефон: {app_details['phone_number']}" if app_details.get('phone_number') else ""
-        caption = (
-            f"📨 Новая новость #{app_id} (без модерации)\n"
-            f"• Тип: {full_type}\n• Фото: {has_photo}{phone}\n"
-            f"• От: @{app_details.get('username') or 'N/A'} (ID: {app_details['user_id']})\n"
-            f"• Текст: {app_details['text']}\n"
-        )
-        try:
-            if app_details.get('photo_id'):
-                await bot.send_photo(
-                    chat_id=ADMIN_CHAT_ID,
-                    photo=app_details['photo_id'],
-                    caption=caption
-                )
-            else:
-                await bot.send_message(
-                    chat_id=ADMIN_CHAT_ID,
-                    text=caption
-                )
-            logger.info(f"Новость #{app_id} отправлена админу без модерации.")
-        except TelegramError as e:
-            logger.warning(f"Ошибка отправки новости #{app_id} админу: {e}")
-        except Exception as e:
-            logger.error(f"Неожиданная ошибка при отправке новости #{app_id} админу: {e}", exc_info=True)
-        return # Для новостей не отправляем кнопки модерации
-
-    # Для остальных типов (поздравления, объявления) - стандартная логика с модерацией
-    has_photo = "✅" if app_details.get('photo_id') else "❌"
-    phone = f"\n• Телефон: {app_details['phone_number']}" if app_details.get('phone_number') else ""
-
-    caption = (
-        f"📨 Новая заявка #{app_id}\n"
-        f"• Тип: {full_type}\n• Фото: {has_photo}{phone}\n"
-        f"• От: @{app_details.get('username') or 'N/A'} (ID: {app_details['user_id']})\n"
-        f"• Текст: {app_details['text'][:200]}...\n\nВыберите действие:"
-    )
-
-    keyboard = [
-        [InlineKeyboardButton("✅ Одобрить", callback_data=f"approve_{app_id}"),
-         InlineKeyboardButton("❌ Отклонить", callback_data=f"reject_{app_id}")],
-        [InlineKeyboardButton("👀 Посмотреть", callback_data=f"view_{app_id}")]
-    ]
-
-    try:
-        if app_details.get('photo_id'):
-            await bot.send_photo(
-                chat_id=ADMIN_CHAT_ID,
-                photo=app_details['photo_id'],
-                caption=caption,
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
-        else:
-            await bot.send_message(
-                chat_id=ADMIN_CHAT_ID,
-                text=caption,
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
-    except TelegramError as e:
-        logger.warning(f"Ошибка отправки заявки #{app_id} админу: {e}")
-    except Exception as e:
-        logger.error(f"Неожиданная ошибка при уведомлении админа о заявке #{app_id}: {e}", exc_info=True)
-
-async def notify_user_about_decision(bot: Bot, app_details: dict, approved: bool):
-    """Уведомляет пользователя о решении по заявке."""
-    user_id = app_details['user_id']
-    app_type = REQUEST_TYPES.get(app_details['type'], {}).get('name', 'заявка')
-    status = "одобрена" if approved else "отклонена модератором"
-    icon = "🎉" if approved else "😕"
-    text = f"{icon} Ваша заявка на «{app_type}» была {status}."
-    await safe_send_message(bot, user_id, text)
-
-async def publish_to_channel(app_id: int, bot: Bot) -> bool:
-    """Публикует заявку в канал с фото или без"""
-    if not CHANNEL_ID:
-        logger.error("CHANNEL_ID не задан. Публикация невозможна.")
-        return False
-    app_details = get_application_details(app_id)
-    if not app_details:
-        logger.error(f"Заявка #{app_id} не найдена.")
-        return False
-    current_time = datetime.now(TIMEZONE).strftime("%H:%M")
-    text = app_details['text']
-    photo_id = app_details['photo_id']
-    phone = app_details['phone_number']
-    # Добавляем телефон в текст, если он есть
-    if phone:
-        text += f"\n📞 Телефон: {phone}"
-    message_text = (
-        f"{text}\n"
-        f"#НебольшойМирНиколаевск\n"
-        f"🕒 {current_time}"
-    )
-    try:
-        # Используем disable_web_page_preview=True для компактности
-        if photo_id:
-            await bot.send_photo(
-                chat_id=CHANNEL_ID,
-                photo=photo_id,
-                caption=message_text,
-                disable_notification=True,
-                disable_web_page_preview=True # Отключаем превью для ссылок в подписи
-            )
-        else:
-            await bot.send_message(
-                chat_id=CHANNEL_ID,
-                text=message_text,
-                disable_web_page_preview=True, # Отключаем превью для ссылок
-                disable_notification=True
-            )
-        mark_application_as_published(app_id)
-        logger.info(f"Опубликовано сообщение #{app_id}")
-        return True
-    except Exception as e:
-        logger.error(f"Ошибка публикации: {str(e)}")
-        return False
-
-async def check_pending_applications(context: CallbackContext) -> None:
-    """Проверяет и публикует одобренные заявки."""
-    try:
-        applications = get_approved_unpublished_applications()
-        for app in applications:
-            try:
-                publish_now = True
-                # Проверяем дату публикации для поздравлений
-                if app['type'] == 'congrat' and app.get('publish_date'):
-                    publish_date_obj = datetime.strptime(app['publish_date'], "%Y-%m-%d").date()
-                    today = datetime.now().date()
-                    if publish_date_obj > today:
-                        publish_now = False
-                if publish_now:
-                    await publish_to_channel(app['id'], context.bot)
-                    await asyncio.sleep(1)
-            except Exception as e:
-                logger.error(f"Ошибка обработки заявки #{app['id']}: {e}")
-    except Exception as e:
-        logger.error(f"Ошибка проверки заявок: {e}")
-
-# ========== ОБРАБОТЧИКИ ДИАЛОГА ==========
-async def start_command(update: Update, context: CallbackContext) -> int:
-    """Обработчик команды /start."""
-    context.user_data.clear()
+# --- 6. ОБРАБОТЧИКИ ---
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     keyboard = [
         [InlineKeyboardButton(f"{info['icon']} {info['name']}", callback_data=key)]
         for key, info in REQUEST_TYPES.items()
     ]
-    # Улучшенный текст приветствия
-    await safe_reply_text(update, "👋 Здравствуйте!\nВыберите, что хотите отправить в канал:", reply_markup=InlineKeyboardMarkup(keyboard))
-    return TYPE_SELECTION
+    await update.message.reply_text(
+        "👋 Здравствуйте!\nВыберите, что хотите отправить:",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    return "TYPE_SELECTION"
 
-async def handle_type_selection(update: Update, context: CallbackContext) -> int:
-    """Обработчик выбора типа заявки."""
+async def handle_type_selection(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
     request_type = query.data
     context.user_data["type"] = request_type
-    if request_type == "news":
-        # Для новости сразу переходим к вводу телефона
-        await safe_edit_message_text(
-            query,
-            "Введите ваш контактный телефон (формат: +7... или 8...):",
-            reply_markup=InlineKeyboardMarkup(BACK_BUTTON)
-        )
-        return NEWS_PHONE_INPUT
-    elif request_type == "congrat":
-        await safe_edit_message_text(
-            query,
-            f"Введите ваше имя (например: *{EXAMPLE_TEXTS['sender_name']}*):",
-            reply_markup=InlineKeyboardMarkup(BACK_BUTTON),
-            parse_mode="Markdown"
-        )
-        return SENDER_NAME_INPUT
-    elif request_type == "announcement":
-        # Показываем подтипы объявлений
+
+    if request_type == "carpool":
+        # Показываем подтипы попутки (без эмодзи)
         keyboard = [
-            [InlineKeyboardButton(subtype, callback_data=f"subtype_{key}")]
-            for key, subtype in ANNOUNCE_SUBTYPES.items()
+            [InlineKeyboardButton(name, callback_data=f"carpool_{key}")]
+            for key, name in CARPOOL_SUBTYPES.items()
         ] + BACK_BUTTON
-        await safe_edit_message_text(
-            query,
-            "Выберите тип объявления:",
+        await query.edit_message_text(
+            "Выберите тип попутки:",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
-        return ANNOUNCE_SUBTYPE_SELECTION
-    return ConversationHandler.END
-
-async def get_sender_name(update: Update, context: CallbackContext) -> int:
-    """Получает имя отправителя поздравления."""
-    sender_name = update.message.text.strip()
-    if not validate_name(sender_name):
-        await safe_reply_text(
-            update,
-            f"Пожалуйста, введите корректное имя (от 2 до {MAX_NAME_LENGTH} символов)."
-        )
-        return SENDER_NAME_INPUT
-    context.user_data["from_name"] = sender_name
-    await safe_reply_text(
-        update,
-        f"Кого поздравляете? Например: *{EXAMPLE_TEXTS['recipient_name']}*",
-        parse_mode="Markdown"
-    )
-    return RECIPIENT_NAME_INPUT
-
-async def get_recipient_name(update: Update, context: CallbackContext) -> int:
-    """Получает имя получателя поздравления."""
-    recipient_name = update.message.text.strip()
-    if not validate_name(recipient_name):
-        await safe_reply_text(
-            update,
-            f"Пожалуйста, введите корректное имя (от 2 до {MAX_NAME_LENGTH} символов)."
-        )
-        return RECIPIENT_NAME_INPUT
-    context.user_data["to_name"] = recipient_name
-    # Показываем ВСЕ праздники (без фильтрации)
-    keyboard = [
-        [InlineKeyboardButton(holiday, callback_data=f"holiday_{holiday}")]
-        for holiday in HOLIDAYS
-    ] + [
-        # Переименована кнопка
-        [InlineKeyboardButton("🎉 Другой праздник", callback_data="custom_congrat")],
-        [InlineKeyboardButton("🔙 Вернуться в начало", callback_data="back_to_start")]
-    ]
-    # Улучшенный текст приглашения
-    await safe_reply_text(
-        update,
-        "Выберите праздник из списка или укажите свой:",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-    return CONGRAT_HOLIDAY_CHOICE
-
-async def handle_congrat_holiday_choice(update: Update, context: CallbackContext) -> int:
-    """Обработчик выбора праздника."""
-    query = update.callback_query
-    await query.answer()
-    if query.data == "custom_congrat":
-        context.user_data["congrat_type"] = "custom"
-        # Упрощённый текст для пользовательского поздравления
-        await safe_edit_message_text(
-            query,
-            f"Напишите своё поздравление (до {MAX_CONGRAT_TEXT_LENGTH} символов):",
-            reply_markup=InlineKeyboardMarkup(BACK_BUTTON)
-        )
-        return CUSTOM_CONGRAT_MESSAGE_INPUT
-    # Обработка выбора стандартного праздника
-    holiday = query.data.replace("holiday_", "")
-    if holiday not in HOLIDAYS:
-         await safe_edit_message_text(query, "❌ Неизвестный праздник. Пожалуйста, выберите из списка.")
-         return ConversationHandler.END
-    template = HOLIDAY_TEMPLATES.get(holiday, "С праздником!")
-    from_name = context.user_data.get("from_name", "")
-    to_name = context.user_data.get("to_name", "")
-    context.user_data["text"] = f"{from_name} поздравляет {to_name} с {holiday}!\n{template}"
-    context.user_data["congrat_type"] = "standard"
-    
-    # После выбора стандартного праздника, предлагаем выбрать дату публикации
-    keyboard = [
-        [InlineKeyboardButton("📅 Сегодня", callback_data="publish_today")],
-        [InlineKeyboardButton("📆 Указать дату", callback_data="publish_custom_date")],
-        [InlineKeyboardButton("🔙 Вернуться в начало", callback_data="back_to_start")]
-    ]
-    await safe_edit_message_text(
-        query,
-        "Когда опубликовать поздравление?",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-    return CONGRAT_DATE_CHOICE
-
-async def handle_congrat_date_choice(update: Update, context: CallbackContext) -> int:
-    """Обработчик выбора даты публикации поздравления."""
-    query = update.callback_query
-    await query.answer()
-    if query.data == "publish_today":
-        context.user_data["publish_date"] = datetime.now().strftime("%Y-%m-%d")
-        # Переходим к завершению запроса
-        return await complete_request(update, context)
-    elif query.data == "publish_custom_date":
-        await safe_edit_message_text(
-            query,
-            "Введите дату публикации в формате ДД-ММ-ГГГГ:",
-            reply_markup=InlineKeyboardMarkup(BACK_BUTTON)
-        )
-        return CONGRAT_DATE_INPUT
-    return ConversationHandler.END
-
-async def get_custom_congrat_message(update: Update, context: CallbackContext) -> int:
-    """Получает пользовательский текст поздравления."""
-    text = update.message.text.strip()
-    if len(text) > MAX_CONGRAT_TEXT_LENGTH:
-        await safe_reply_text(
-            update,
-            f"Текст слишком длинный (максимум {MAX_CONGRAT_TEXT_LENGTH} символов)."
-        )
-        return CUSTOM_CONGRAT_MESSAGE_INPUT
-    from_name = context.user_data.get("from_name", "")
-    to_name = context.user_data.get("to_name", "")
-    context.user_data["text"] = f"{from_name} поздравляет {to_name}!\n{text}"
-    context.user_data["congrat_type"] = "custom"
-    
-    # После ввода текста для пользовательского поздравления, предлагаем выбрать дату публикации
-    keyboard = [
-        [InlineKeyboardButton("📅 Сегодня", callback_data="publish_today")],
-        [InlineKeyboardButton("📆 Указать дату", callback_data="publish_custom_date")],
-        [InlineKeyboardButton("🔙 Вернуться в начало", callback_data="back_to_start")]
-    ]
-    await safe_reply_text(
-        update,
-        "Когда опубликовать поздравление?",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-    return CONGRAT_DATE_CHOICE
-
-async def get_congrat_date(update: Update, context: CallbackContext) -> int:
-    """Получает дату публикации поздравления."""
-    date_str = update.message.text.strip()
-    try:
-        publish_date = datetime.strptime(date_str, "%d-%m-%Y").date()
-        if publish_date < datetime.now().date():
-            await safe_reply_text(update, "Нельзя указать прошедшую дату.")
-            return CONGRAT_DATE_INPUT
-        context.user_data["publish_date"] = publish_date.strftime("%Y-%m-%d")
-        return await complete_request(update, context)
-    except ValueError:
-        await safe_reply_text(update, "Неверный формат даты. Введите ДД-ММ-ГГГГ:")
-        return CONGRAT_DATE_INPUT
-
-async def handle_announce_subtype_selection(update: Update, context: CallbackContext) -> int:
-    """Обработчик выбора подтипа объявления."""
-    query = update.callback_query
-    await query.answer()
-    subtype_key = query.data.replace("subtype_", "")
-    context.user_data["subtype"] = subtype_key
-    # Для "Спрос и предложения" запрашиваем телефон
-    if subtype_key == "demand_offer":
-        await safe_edit_message_text(
-            query,
+        return "CARPOOL_SUBTYPE"
+    elif request_type == "news":
+        await query.edit_message_text(
             "Введите ваш контактный телефон (формат: +7... или 8...):",
             reply_markup=InlineKeyboardMarkup(BACK_BUTTON)
         )
-        return PHONE_INPUT
-    # Для остальных типов сразу переходим к тексту
-    example = EXAMPLE_TEXTS["announcement"].get(subtype_key, "")
-    await safe_edit_message_text(
-        query,
-        f"Введите текст объявления (до {MAX_TEXT_LENGTH} символов) и/или прикрепите фото.\nПример: *{example}*",
-        reply_markup=InlineKeyboardMarkup(BACK_BUTTON),
-        parse_mode="Markdown"
-    )
-    return ANNOUNCE_TEXT_INPUT
+        return "NEWS_PHONE_INPUT"
+    else:
+        await query.edit_message_text("Временно недоступно. Попробуйте позже.", reply_markup=InlineKeyboardMarkup(BACK_BUTTON))
+        return ConversationHandler.END
 
-async def get_phone_number(update: Update, context: CallbackContext) -> int:
-    """Получает номер телефона для объявлений."""
-    phone = update.message.text.strip()
-    if not validate_phone(phone):
-        await safe_reply_text(
-            update,
-            "Неверный формат номера. Используйте +7... или 8..."
-        )
-        return PHONE_INPUT
-    context.user_data["phone_number"] = phone
-    await safe_reply_text(
-        update,
-        f"Теперь введите текст объявления (до {MAX_TEXT_LENGTH} символов) и/или прикрепите фото:"
-    )
-    return ANNOUNCE_TEXT_INPUT
-
-async def process_text_and_photo(update: Update, context: CallbackContext) -> int:
-    """Обрабатывает текст и/или фото для объявлений."""
-    # ✅ Получаем только одно фото (предупреждение о единственном фото)
-    if update.message.photo:
-        if len(update.message.photo) > 1:
-            logger.info("Пользователь отправил несколько фото, будет обработано только одно.")
-            await safe_reply_text(
-                update,
-                "⚠️ Вы отправили несколько фото. Будет обработано только одно (с наилучшим качеством)."
-            )
-        # Получаем фото с оптимальным качеством (не самое большое)
-        photo = update.message.photo[-2] if len(update.message.photo) > 1 else update.message.photo[0]
-        context.user_data["photo_id"] = photo.file_id
-    # Получаем текст из сообщения или подписи к фото
-    text = update.message.text or update.message.caption
-    if not text:
-        await safe_reply_text(update, "Пожалуйста, введите текст к вашему сообщению.")
-        return ANNOUNCE_TEXT_INPUT
-    text = text.strip()
-    if len(text) > MAX_TEXT_LENGTH:
-        await safe_reply_text(
-            update,
-            f"Текст слишком длинный (максимум {MAX_TEXT_LENGTH} символов)."
-        )
-        return ANNOUNCE_TEXT_INPUT
-    context.user_data["text"] = text
-    return await complete_request(update, context)
-
-async def handle_censor_choice(update: Update, context: CallbackContext) -> int:
-    """Обработчик выбора действия при цензуре."""
+async def handle_carpool_subtype(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
-    if query.data == "accept_censor":
-        context.user_data["text"] = context.user_data["censored_text"]
-        # Определяем, какой тип заявки обрабатывается, чтобы вернуться к правильному завершению
-        if context.user_data.get("type") == "congrat":
-            return await complete_request(update, context)
-        elif context.user_data.get("type") == "announcement":
-            return await complete_request(update, context)
-        elif context.user_data.get("type") == "news":
-            return await complete_request(update, context)
-    elif query.data == "edit_censor":
-        await safe_edit_message_text(query, "Введите исправленный текст:")
-        # Определяем, какой тип заявки обрабатывается, чтобы вернуться к правильному вводу
-        if context.user_data.get("type") == "congrat":
-            return CUSTOM_CONGRAT_MESSAGE_INPUT
-        elif context.user_data.get("type") == "announcement":
-            return ANNOUNCE_TEXT_INPUT
-        elif context.user_data.get("type") == "news":
-            return NEWS_TEXT_INPUT
-    return ConversationHandler.END
+    subtype_key = query.data.replace("carpool_", "")
+    context.user_data["subtype"] = subtype_key
 
-# ========== НОВЫЕ ОБРАБОТЧИКИ ДЛЯ НОВОСТЕЙ ==========
-async def get_news_phone_number(update: Update, context: CallbackContext) -> int:
-    """Получает номер телефона для новости."""
-    phone = update.message.text.strip()
-    if not validate_phone(phone):
-        await safe_reply_text(
-            update,
-            "Неверный формат номера. Используйте +7... или 8..."
-        )
-        return NEWS_PHONE_INPUT
-    context.user_data["phone_number"] = phone
-    await safe_reply_text(
-        update,
-        f"Теперь введите текст новости (до {MAX_ANNOUNCE_NEWS_TEXT_LENGTH} символов) и/или прикрепите фото.\nПример: *{EXAMPLE_TEXTS['news']}*",
-        parse_mode="Markdown"
-    )
-    return NEWS_TEXT_INPUT
-
-async def process_news_text_and_photo(update: Update, context: CallbackContext) -> int:
-    """Обрабатывает текст и/или фото для новости."""
-    # ✅ Получаем только одно фото (предупреждение о единственном фото)
-    if update.message.photo:
-        if len(update.message.photo) > 1:
-            logger.info("Пользователь отправил несколько фото, будет обработано только одно.")
-            await safe_reply_text(
-                update,
-                "⚠️ Вы отправили несколько фото. Будет обработано только одно (с наилучшим качеством)."
-            )
-        # Получаем фото с оптимальным качеством (не самое большое)
-        photo = update.message.photo[-2] if len(update.message.photo) > 1 else update.message.photo[0]
-        context.user_data["photo_id"] = photo.file_id
-    # Получаем текст из сообщения или подписи к фото
-    text = update.message.text or update.message.caption
-    if not text:
-        await safe_reply_text(update, "Пожалуйста, введите текст к вашей новости.")
-        return NEWS_TEXT_INPUT
-    text = text.strip()
-    if len(text) > MAX_ANNOUNCE_NEWS_TEXT_LENGTH: # Используем правильную константу
-        await safe_reply_text(
-            update,
-            f"Текст слишком длинный (максимум {MAX_ANNOUNCE_NEWS_TEXT_LENGTH} символов)."
-        )
-        return NEWS_TEXT_INPUT
-    context.user_data["text"] = text
-    
-    # Создаем заявку
-    user = update.effective_user
-    app_data = {
-        'user_id': user.id,
-        'username': user.username,
-        'type': context.user_data['type'],
-        'text': text,
-        'photo_id': context.user_data.get('photo_id'),
-        'phone_number': context.user_data.get('phone_number'),
-        'subtype': 'news', # Указываем подтип для новости
-    }
-    app_id = add_application(app_data)
-    if app_id:
-        # Отправляем подтверждение пользователю с ссылкой на канал
-        confirmation_text = (
-            "✅ Новость принята. После модерации она будет опубликована в Telegram-канале — "
-            "<a href='https://t.me/nb_mir_nikolaevsk'>Небольшой Мир: Николаевск</a>."
-        )
-        await safe_reply_text(
-            update,
-            confirmation_text,
-            parse_mode="HTML",
-            disable_web_page_preview=True,
-            reply_markup=InlineKeyboardMarkup(BACK_BUTTON)
-        )
-        # Отправляем новость админу сразу, без модерации
-        await notify_admin_new_application(context.bot, app_id, app_data)
-    else:
-        await safe_reply_text(
-            update,
-            "❌ Произошла ошибка. Попробуйте позже.",
-            reply_markup=InlineKeyboardMarkup(BACK_BUTTON)
-        )
-    context.user_data.clear()
-    return ConversationHandler.END
-
-async def complete_request(update: Update, context: CallbackContext) -> int:
-    """Завершает создание заявки (для поздравлений и объявлений)."""
-    user = update.effective_user
-    # Проверяем лимит заявок
-    if not can_submit_request(user.id):
-        await safe_reply_text(
-            update,
-            "Вы отправили слишком много заявок. Попробуйте позже."
-        )
-        return ConversationHandler.END
-    user_data = context.user_data
-    final_text = user_data.get("text", "")
-    # Проверяем на запрещенные слова
-    censored_text, has_bad = await censor_text(final_text)
-    if has_bad:
-        user_data["censored_text"] = censored_text
-        keyboard = [
-            [InlineKeyboardButton("✅ Принять и отправить", callback_data="accept_censor")],
-            [InlineKeyboardButton("✏️ Изменить текст", callback_data="edit_censor")]
-        ]
-        await safe_reply_text(
-            update,
-            f"⚠️ В тексте найдены запрещённые слова (заменены на ***):\n{censored_text}\nПодтвердите или измените текст:",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-        return WAIT_CENSOR_APPROVAL
-    # Создаем заявку
-    app_data = {
-        'user_id': user.id,
-        'username': user.username,
-        'type': user_data['type'],
-        'text': final_text,
-        'photo_id': user_data.get('photo_id'),
-        'from_name': user_data.get('from_name'),
-        'to_name': user_data.get('to_name'),
-        'congrat_type': user_data.get('congrat_type'),
-        'publish_date': user_data.get('publish_date'),
-        'subtype': user_data.get('subtype'),
-        'phone_number': user_data.get('phone_number')  # Новое поле
-    }
-    app_id = add_application(app_data)
-    if app_id:
-        await notify_admin_new_application(context.bot, app_id, app_data)
-        request_type_name = REQUEST_TYPES.get(user_data['type'], {}).get('name', 'заявка')
-        await safe_reply_text(
-            update,
-            f"✅ Ваша заявка на «{request_type_name}» (№{app_id}) отправлена на проверку!",
-            reply_markup=InlineKeyboardMarkup(BACK_BUTTON)
-        )
-    else:
-        await safe_reply_text(
-            update,
-            "❌ Произошла ошибка. Попробуйте позже.",
-            reply_markup=InlineKeyboardMarkup(BACK_BUTTON)
-        )
-    context.user_data.clear()
-    return ConversationHandler.END
-
-async def back_to_start(update: Update, context: CallbackContext) -> int:
-    """Возвращает в начало диалога."""
-    if update.callback_query:
-        await update.callback_query.answer()
-    context.user_data.clear()
-    # Улучшенный текст при возврате в начало
-    keyboard = [
-        [InlineKeyboardButton(f"{info['icon']} {info['name']}", callback_data=key)]
-        for key, info in REQUEST_TYPES.items()
-    ]
-    await safe_reply_text(update, "Вы вернулись в главное меню. Выберите действие:", reply_markup=InlineKeyboardMarkup(keyboard))
-    return TYPE_SELECTION
-
-async def cancel_command(update: Update, context: CallbackContext) -> int:
-    """Отменяет текущий диалог."""
-    await safe_reply_text(
-        update,
-        "Действие отменено.",
+    example = EXAMPLE_TEXTS["carpool"].get(subtype_key, "")
+    await query.edit_message_text(
+        f"Введите текст заявки (до {config.MAX_TEXT_LENGTH} символов).\nПример: {example}",
         reply_markup=InlineKeyboardMarkup(BACK_BUTTON)
     )
+    return "CARPOOL_TEXT_INPUT"
+
+async def handle_carpool_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    text = update.message.text.strip()
+    if len(text) > config.MAX_TEXT_LENGTH:
+        await update.message.reply_text(f"Слишком длинный текст. Максимум: {config.MAX_TEXT_LENGTH} символов.")
+        return "CARPOOL_TEXT_INPUT"
+
+    censored_text, has_bad = await censor_text(text)
+    if has_bad:
+        await update.message.reply_text("❌ Ваше сообщение содержит запрещённые слова. Заявка не отправлена.")
+        return ConversationHandler.END
+
+    phone = context.user_data.get("phone")
+    if not phone:
+        await update.message.reply_text("Введите телефон:")
+        return "CARPOOL_PHONE_INPUT"
+
+    # Автопубликация
+    try:
+        message = f"🚗 <b>Попутка</b>\n{censored_text}\n📞 <b>Телефон:</b> {phone}\n#ПопуткаНиколаевск"
+        await context.bot.send_message(
+            chat_id=config.CHANNEL_ID,
+            text=message,
+            parse_mode="HTML"
+        )
+        await update.message.reply_text("✅ Ваша заявка опубликована!")
+    except Exception as e:
+        logger.error(f"Ошибка публикации попутки: {e}")
+        await update.message.reply_text("❌ Не удалось опубликовать. Попробуйте позже.")
+
     context.user_data.clear()
     return ConversationHandler.END
 
-# ========== ОБРАБОТЧИКИ АДМИНА ==========
-async def admin_view_application(update: Update, context: CallbackContext):
-    """Показывает детали заявки администратору."""
-    query = update.callback_query
-    await query.answer()
-    app_id = int(query.data.split('_')[1])
-    app_details = get_application_details(app_id)
-    if not app_details:
-        await safe_edit_message_text(query, "Заявка не найдена.")
+# --- 7. КОМАНДА /pending (восстановление заявок) ---
+async def pending_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.id != config.ADMIN_CHAT_ID:
         return
-    app_type = REQUEST_TYPES.get(app_details['type'], {}).get('name', 'Заявка')
-    subtype = ANNOUNCE_SUBTYPES.get(app_details['subtype'], '') if app_details['subtype'] else ''
-    full_type = f"{app_type}" + (f" ({subtype})" if subtype else '')
-    from_name = f"От: {app_details['from_name']}\n" if app_details['from_name'] else ''
-    to_name = f"Кому: {app_details['to_name']}\n" if app_details['to_name'] else ''
-    phone = f"Телефон: {app_details['phone_number']}\n" if app_details['phone_number'] else ''
-    publish_date = f"Дата публикации: {app_details['publish_date']}\n" if app_details['publish_date'] else ''
-    text = (
-        f"📝 Детали заявки #{app_id}\n"
-        f"Тип: {full_type}\n"
-        f"{from_name}{to_name}{phone}{publish_date}"
-        f"Текст: {app_details['text']}\n"
-        f"Пользователь: @{app_details.get('username', 'N/A')} (ID: {app_details['user_id']})\n"
-        f"Статус: {app_details['status']}\n"
-        f"Создано: {app_details['created_at']}"
-    )
-    keyboard = [
-        [InlineKeyboardButton("✅ Одобрить", callback_data=f"approve_{app_id}"),
-         InlineKeyboardButton("❌ Отклонить", callback_data=f"reject_{app_id}")]
-    ]
-    # Если есть фото, отправляем его
-    if app_details['photo_id']:
+
+    with get_db_connection() as conn:
+        cur = conn.execute("""
+            SELECT id, type, text, phone_number 
+            FROM applications 
+            WHERE status = 'pending' 
+            ORDER BY created_at DESC
+        """)
+        apps = cur.fetchall()
+
+    if not apps:
+        await update.message.reply_text("📭 Нет заявок в очереди.")
+        return
+
+    for app in apps:
+        app_text = f"#{app['id']} ({app['type']})\n{app['text']}\n📞 {app['phone_number']}"
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ Одобрить", callback_data=f"approve_{app['id']}"),
+            InlineKeyboardButton("❌ Отклонить", callback_data=f"reject_{app['id']}")
+        ]])
         try:
-            await context.bot.send_photo(
-                query.message.chat.id,
-                photo=app_details['photo_id'],
-                caption=text,
-                reply_markup=InlineKeyboardMarkup(keyboard)
+            await context.bot.send_message(
+                chat_id=config.ADMIN_CHAT_ID,
+                text=app_text,
+                reply_markup=keyboard
             )
-            await query.delete_message()
-        except TelegramError as e:
-            logger.error(f"Ошибка отправки фото админу: {e}")
-            await safe_edit_message_text(query, text, reply_markup=InlineKeyboardMarkup(keyboard))
-    else:
-        await safe_edit_message_text(query, text, reply_markup=InlineKeyboardMarkup(keyboard))
-
-async def admin_approve_application(update: Update, context: CallbackContext):
-    """Одобряет заявку."""
-    query = update.callback_query
-    await query.answer()
-    app_id = int(query.data.split('_')[1])
-    app_details = get_application_details(app_id)
-    if not app_details:
-        await safe_edit_message_text(query, "Заявка не найдена.")
-        return
-    if update_application_status(app_id, 'approved'):
-        await safe_edit_message_text(query, f"Заявка #{app_id} одобрена.")
-        await notify_user_about_decision(context.bot, app_details, True)
-    else:
-        await safe_edit_message_text(query, f"Ошибка одобрения заявки #{app_id}.")
-
-async def admin_reject_application(update: Update, context: CallbackContext):
-    """Отклоняет заявку."""
-    query = update.callback_query
-    await query.answer()
-    app_id = int(query.data.split('_')[1])
-    app_details = get_application_details(app_id)
-    if not app_details:
-        await safe_edit_message_text(query, "Заявка не найдена.")
-        return
-    if update_application_status(app_id, 'rejected'):
-        await safe_edit_message_text(query, f"Заявка #{app_id} отклонена.")
-        await notify_user_about_decision(context.bot, app_details, False)
-    else:
-        await safe_edit_message_text(query, f"Ошибка отклонения заявки #{app_id}.")
-
-# ========== ДОПОЛНИТЕЛЬНЫЕ КОМАНДЫ ==========
-async def help_command(update: Update, context: CallbackContext) -> None:
-    """Обработчик команды /help."""
-    help_text = (
-        "ℹ️ *Помощь по боту*\n\n"
-        "Этот бот предназначен для отправки заявок в группу *Что почём?Николаевск*.\n\n"
-        "📌 *Как использовать:*\n"
-        "1. Нажмите /start.\n"
-        "2. Выберите тип заявки: Поздравление, Объявления или Новость от жителя.\n"
-        "3. Следуйте инструкциям бота.\n"
-        "4. Ваша заявка будет отправлена на модерацию (кроме новостей).\n\n"
-        "Если у вас есть вопросы, обратитесь к администратору группы."
-    )
-    await safe_reply_text(update, help_text, parse_mode="Markdown")
-async def pending_command(update: Update, context: CallbackContext) -> None:
-    """Команда /pending — показывает все заявки в статусе 'pending'."""
-    if not ADMIN_CHAT_ID or update.effective_chat.id != ADMIN_CHAT_ID:
-        await safe_reply_text(update, "❌ Эта команда доступна только администратору.")
-        return
-
-    try:
-        with get_db_connection() as conn:
-            conn.row_factory = sqlite3.Row
-            cur = conn.cursor()
-            cur.execute("""
-                SELECT id, type, subtype, from_name, to_name, text, photo_id, phone_number
-                FROM applications
-                WHERE status = 'pending'
-                ORDER BY created_at DESC
-                LIMIT 10
-            """)
-            apps = cur.fetchall()
-
-        if not apps:
-            await safe_reply_text(update, "📭 Нет заявок, ожидающих модерации.")
-            return
-
-        for app in apps:
-            app_type = REQUEST_TYPES.get(app['type'], {}).get('name', 'Заявка')
-            subtype = ANNOUNCE_SUBTYPES.get(app['subtype'], '') if app['subtype'] else ''
-            full_type = f"{app_type}" + (f" ({subtype})" if subtype else '')
-            from_name = f"От: {app['from_name']}\n" if app['from_name'] else ''
-            to_name = f"Кому: {app['to_name']}\n" if app['to_name'] else ''
-            phone = f"Телефон: {app['phone_number']}\n" if app['phone_number'] else ''
-
-            caption = (
-                f"📨 Заявка #{app['id']}\n"
-                f"Тип: {full_type}\n"
-                f"{from_name}{to_name}{phone}"
-                f"Текст: {app['text'][:200]}...\n"
-                f"Выберите действие:"
-            )
-            keyboard = [
-                [InlineKeyboardButton("✅ Одобрить", callback_data=f"approve_{app['id']}"),
-                 InlineKeyboardButton("❌ Отклонить", callback_data=f"reject_{app['id']}")],
-                [InlineKeyboardButton("👀 Посмотреть", callback_data=f"view_{app['id']}")]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-
-            if app['photo_id']:
-                try:
-                    await context.bot.send_photo(
-                        chat_id=update.effective_chat.id,
-                        photo=app['photo_id'],
-                        caption=caption,
-                        reply_markup=reply_markup
-                    )
-                except TelegramError as e:
-                    logger.warning(f"Не удалось отправить фото для заявки #{app['id']}: {e}")
-                    await context.bot.send_message(
-                        chat_id=update.effective_chat.id,
-                        text=caption,
-                        reply_markup=reply_markup
-                    )
-            else:
-                await context.bot.send_message(
-                    chat_id=update.effective_chat.id,
-                    text=caption,
-                    reply_markup=reply_markup
-                )
-
-    except Exception as e:
-        logger.error(f"Ошибка при выполнении /pending: {e}", exc_info=True)
-        await safe_reply_text(update, "❌ Произошла ошибка при получении заявок.")
-# ========== НАСТРОЙКА ПРИЛОЖЕНИЯ ==========
-async def setup_telegram_application():
-    """Настраивает Telegram приложение."""
-    global application
-    # ✅ 1. Сделай application явно asyncio-safe:
-    async with application_lock:
-        if application is not None:
-            logger.info("Telegram Application уже инициализирована.")
-            return
-        logger.info("Начало инициализации Telegram Application...")
-        try:
-            application = Application.builder().token(TOKEN).build()
-            # Инициализация БД
-            init_db()
-            # Диалог для создания заявки
-            conv_handler = ConversationHandler(
-                entry_points=[CommandHandler("start", start_command)],
-                states={
-                    TYPE_SELECTION: [
-                        CallbackQueryHandler(handle_type_selection, pattern="^(congrat|announcement|news)$")
-                    ],
-                    SENDER_NAME_INPUT: [
-                        MessageHandler(filters.TEXT & ~filters.COMMAND, get_sender_name)
-                    ],
-                    RECIPIENT_NAME_INPUT: [
-                        MessageHandler(filters.TEXT & ~filters.COMMAND, get_recipient_name)
-                    ],
-                    CONGRAT_HOLIDAY_CHOICE: [
-                        CallbackQueryHandler(handle_congrat_holiday_choice, pattern="^(holiday_.*|custom_congrat)$")
-                    ],
-                    CUSTOM_CONGRAT_MESSAGE_INPUT: [
-                        MessageHandler(filters.TEXT & ~filters.COMMAND, get_custom_congrat_message)
-                    ],
-                    CONGRAT_DATE_CHOICE: [
-                        CallbackQueryHandler(handle_congrat_date_choice, pattern="^(publish_today|publish_custom_date)$")
-                    ],
-                    CONGRAT_DATE_INPUT: [
-                        MessageHandler(filters.TEXT & ~filters.COMMAND, get_congrat_date)
-                    ],
-                    ANNOUNCE_SUBTYPE_SELECTION: [
-                        CallbackQueryHandler(handle_announce_subtype_selection, pattern="^subtype_.*")
-                    ],
-                    PHONE_INPUT: [
-                        MessageHandler(filters.TEXT & ~filters.COMMAND, get_phone_number)
-                    ],
-                    ANNOUNCE_TEXT_INPUT: [
-                        MessageHandler(filters.TEXT | filters.PHOTO & ~filters.COMMAND, process_text_and_photo)
-                    ],
-                    # Новые состояния для новостей
-                    NEWS_PHONE_INPUT: [
-                        MessageHandler(filters.TEXT & ~filters.COMMAND, get_news_phone_number)
-                    ],
-                    NEWS_TEXT_INPUT: [
-                        MessageHandler(filters.TEXT | filters.PHOTO & ~filters.COMMAND, process_news_text_and_photo)
-                    ],
-                    WAIT_CENSOR_APPROVAL: [
-                        CallbackQueryHandler(handle_censor_choice, pattern="^(accept_censor|edit_censor)$"),
-                        MessageHandler(filters.TEXT & ~filters.COMMAND, process_text_and_photo) # fallback для текста
-                    ]
-                },
-                fallbacks=[
-                    CommandHandler("cancel", cancel_command),
-                    CallbackQueryHandler(back_to_start, pattern="^back_to_start$")
-                ],
-                allow_reentry=True
-            )
-            application.add_handler(conv_handler)
-            # Админские коллбэки
-            application.add_handler(CallbackQueryHandler(admin_approve_application, pattern="^approve_\\d+$"))
-            application.add_handler(CallbackQueryHandler(admin_reject_application, pattern="^reject_\\d+$"))
-            application.add_handler(CallbackQueryHandler(admin_view_application, pattern="^view_\\d+$"))
-            # Дополнительные команды
-            application.add_handler(CommandHandler("help", help_command))
-            # ✅ Добавлена команда /pending
-            application.add_handler(CommandHandler("pending", pending_command))
-            await application.initialize()
-            # Установка вебхука
-            if WEBHOOK_URL and TOKEN:
-                webhook_url = f"{WEBHOOK_URL}/telegram-webhook/{WEBHOOK_SECRET}"
-                await application.bot.set_webhook(url=webhook_url)
-                logger.info(f"Вебхук установлен: {webhook_url}")
-            else:
-                logger.warning("WEBHOOK_URL или TELEGRAM_TOKEN не заданы. Вебхук не будет установлен.")
-            # Запуск планировщика
-            scheduler = AsyncIOScheduler(timezone=TIMEZONE)
-            scheduler.add_job(check_pending_applications, 'interval', minutes=1, args=[application])
-            scheduler.add_job(cleanup_old_applications, 'cron', hour=3, minute=0)
-            scheduler.start()
-            logger.info("Планировщик запущен.")
-            BOT_STATE['start_time'] = datetime.now(TIMEZONE)
-            BOT_STATE['running'] = True
-            logger.info("Telegram Application setup complete.")
         except Exception as e:
-            logger.critical("Критическая ошибка при инициализации Telegram Application.", exc_info=True)
-            application = None # Сбрасываем, если инициализация не удалась
-            raise # Передаем исключение дальше
+            logger.error(f"Не удалось отправить заявку #{app['id']}: {e}")
 
-# ========== МАРШРУТЫ FASTAPI ==========
-@app.on_event("startup")
-async def startup_event():
-    """Обработчик события запуска FastAPI."""
-    logger.info("Запуск FastAPI сервера...")
-    try:
-        await setup_telegram_application()
-        logger.info("FastAPI сервер запущен и Telegram Application инициализирована.")
-    except Exception as e:
-        logger.critical("Ошибка при запуске сервера и инициализации Telegram Application.", exc_info=True)
-        # В зависимости от требований, можно завершить работу приложения здесь
-        # sys.exit(1) # Раскомментируйте, если хотите, чтобы приложение завершилось при ошибке инициализации
+# --- 8. ЗАПУСК БОТА ---
+def main():
+    init_db()
 
-# ✅ 2. Защити вебхук от None, с попыткой повторной инициализации:
-@app.post("/telegram-webhook/{secret}")
-async def telegram_webhook(secret: str, request: Request):
-    """Обработчик вебхука Telegram."""
-    global application
+    app = (
+        Application.builder()
+        .token(config.TOKEN)
+        .connect_timeout(30.0)
+        .read_timeout(30.0)
+        .write_timeout(30.0)
+        .pool_timeout(30.0)
+        .build()
+    )
 
-    if secret != WEBHOOK_SECRET:
-        raise HTTPException(status_code=403, detail="Invalid secret")
+    conv_handler = ConversationHandler(
+        entry_points=[CommandHandler("start", start_command)],
+        states={
+            "TYPE_SELECTION": [CallbackQueryHandler(handle_type_selection)],
+            "CARPOOL_SUBTYPE": [CallbackQueryHandler(handle_carpool_subtype)],
+            "CARPOOL_TEXT_INPUT": [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_carpool_text)],
+            "CARPOOL_PHONE_INPUT": [MessageHandler(filters.TEXT & ~filters.COMMAND, lambda u, c: handle_carpool_text(u, c))],
+            "NEWS_PHONE_INPUT": [MessageHandler(filters.TEXT & ~filters.COMMAND, lambda u, c: None)],
+            "back_to_start": [CallbackQueryHandler(start_command, pattern="^back_to_start$")]
+        },
+        fallbacks=[CommandHandler("cancel", lambda u, c: None)],
+        allow_reentry=True
+    )
 
-    # Проверяем и, при необходимости, инициализируем application
-    if application is None:
-        logger.warning("⚠️ Telegram Application не инициализирован. Попытка повторной инициализации...")
-        try:
-            await setup_telegram_application()
-            if application is None:
-                 logger.critical("Не удалось инициализировать приложение повторно: application всё ещё None.")
-                 raise HTTPException(status_code=500, detail="Initialization failed after retry")
-            else:
-                 logger.info("Telegram Application успешно инициализирована при обработке вебхука.")
-        except Exception as e:
-            logger.critical("Не удалось инициализировать приложение повторно.", exc_info=True)
-            raise HTTPException(status_code=500, detail="Initialization failed")
+    app.add_handler(conv_handler)
+    app.add_handler(CommandHandler("pending", pending_command))
 
-    # Повторная проверка на случай, если инициализация не помогла
-    if application is None:
-        logger.error("Telegram Application всё ещё не инициализирован после попытки.")
-        raise HTTPException(status_code=500, detail="Bot not initialized")
+    # Повторная отправка заявок каждые 5 минут
+    job_queue = app.job_queue
+    job_queue.run_repeating(lambda c: pending_command(Update(0, None), c), interval=300, first=10)
 
-    try:
-        update = Update.de_json(await request.json(), application.bot)
-        await application.process_update(update)
-        return JSONResponse(status_code=200, content={"status": "ok"})
-    except Exception as e:
-        logger.error(f"Ошибка обработки вебхука: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+    logger.info("🚀 Бот запущен. Используйте /pending для восстановления заявок.")
+    app.run_polling(drop_pending_updates=True)
 
-@app.get("/status")
-async def status():
-    """Статус бота."""
-    return {
-        "status": "running",
-        "uptime": get_uptime(),
-        "bot_initialized": application is not None,
-        "is_working_hours": is_working_hours()
-    }
-
-@app.get("/")
-async def root():
-    """Корневой маршрут."""
-    return {"message": "Telegram Bot Webhook Listener"}
-
-# Для локального запуска
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=PORT)
-
-
+    try:
+        main()
+    except Conflict:
+        logger.error("❌ Бот уже запущен.")
+    except Exception as e:
+        logger.critical(f"❌ Критическая ошибка: {e}", exc_info=True)
