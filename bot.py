@@ -217,12 +217,15 @@ def can_submit_request(user_id: int) -> bool:
         return count < 5
 
 # ========== Функции для базы данных ==========
-def add_application( dict) -> Optional[int]:  # Исправлено:  dict
+def add_application(data: dict) -> Optional[int]:
     try:
         with get_db_connection() as conn:
             cur = conn.cursor()
             cur.execute("""
-                INSERT INTO applications (user_id, username, type, subtype, from_name, to_name, text, photo_id, phone_number, publish_date, congrat_type)
+                INSERT INTO applications (
+                    user_id, username, type, subtype, from_name, to_name, text,
+                    photo_id, phone_number, publish_date, congrat_type
+                )
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 data['user_id'],
@@ -243,6 +246,7 @@ def add_application( dict) -> Optional[int]:  # Исправлено:  dict
     except Exception as e:
         logger.error(f"Ошибка добавления заявки: {e}", exc_info=True)
         return None
+
 
 def get_application_details(app_id: int) -> Optional[sqlite3.Row]:
     try:
@@ -991,3 +995,4 @@ async def root():
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=PORT)
+
