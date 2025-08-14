@@ -114,7 +114,8 @@ ANNOUNCE_SUBTYPES = {
  RIDE_TO_INPUT,
  RIDE_DATE_INPUT,
  RIDE_SEATS_INPUT,
- RIDE_PHONE_INPUT) = range(19)
+ RIDE_PHONE_INPUT,
+ CARPOOL_SUBTYPE_SELECTION) = range(19)
 
 # ========== Логирование ==========
 logging.basicConfig(
@@ -658,4 +659,5 @@ async def root():
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=PORT)
+
 
