@@ -216,7 +216,7 @@ def can_submit_request(user_id: int) -> bool:
         return count < 5
 
 # ========== Функции для базы данных ==========
-def add_application( dict) -> Optional[int]:  # Исправлено:  dict
+def add_application(data: dict) -> Optional[int]:  # Исправлено:  dict
     try:
         with get_db_connection() as conn:
             cur = conn.cursor()
@@ -665,6 +665,25 @@ async def handle_announce_text_input(update: Update, context: CallbackContext) -
     return PHONE_INPUT
 
 # ========== ОБРАБОТЧИКИ НОВОСТЕЙ ==========
+
+async def get_phone_number(update: Update, context: CallbackContext) -> int:
+    """Шаг ввода телефона для объявлений (и любого кейса, где ждать номер)."""
+    # если вдруг прислали фото вместе с телефоном — подхватим photo_id
+    if update.message.photo:
+        context.user_data["photo_id"] = update.message.photo[-1].file_id
+
+    phone_raw = (update.message.text or update.message.caption or "").strip()
+    if not validate_phone(phone_raw):
+        await safe_reply_text(
+            update,
+            "Введите корректный номер телефона (например: +79610904569 или 8XXXXXXXXXX)."
+        )
+        return PHONE_INPUT
+
+    context.user_data["phone_number"] = phone_raw
+    # дальше завершаем заявку (уйдёт на модерацию / опубликуется по логике complete_request)
+    return await complete_request(update, context)
+
 async def get_news_phone_number(update: Update, context: CallbackContext) -> int:
     phone = update.message.text.strip()
     if not validate_phone(phone):
