@@ -165,7 +165,7 @@ def init_db():
             )
         """)
         try:
-            conn.execute("ALTER TABLE applications ADD COLUMN phone_number TEXT")
+            conn.execute("ALTER TABLE applications ADD COLUMN photo_id TEXT")
             conn.commit()
         except sqlite3.OperationalError:
             pass
@@ -216,52 +216,29 @@ def can_submit_request(user_id: int) -> bool:
         return count < 5
 
 # ========== Функции для базы данных ==========
-def add_application(data: dict) -> Optional[int]:
-    """
-    Добавляет заявку в базу данных.
-    Все отсутствующие ключи автоматически заменяются на None.
-    """
+def add_application( dict) -> Optional[int]:  # Исправлено:  dict
     try:
-        # Полный список ключей, которые ждёт база
-        required_keys = [
-            "user_id", "username", "type", "subtype", "from_name", "to_name",
-            "text", "photo_id", "phone_number", "publish_date", "congrat_type"
-        ]
-
-        # Заполняем отсутствующие ключи значением None
-        safe_data = {key: data.get(key, None) for key in required_keys}
-
-        # Логируем пустые поля (кроме username, subtype, photo_id, phone_number — они могут быть None)
-        for key in required_keys:
-            if safe_data[key] is None and key not in ["username", "subtype", "photo_id", "phone_number"]:
-                logger.warning(f"Поле '{key}' пустое при добавлении заявки.")
-
         with get_db_connection() as conn:
             cur = conn.cursor()
             cur.execute("""
-                INSERT INTO applications (
-                    user_id, username, type, subtype, from_name, to_name, text,
-                    photo_id, phone_number, publish_date, congrat_type
-                )
+                INSERT INTO applications (user_id, username, type, subtype, from_name, to_name, text, photo_id, phone_number, publish_date, congrat_type)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
-                safe_data["user_id"],
-                safe_data["username"],
-                safe_data["type"],
-                safe_data["subtype"],
-                safe_data["from_name"],
-                safe_data["to_name"],
-                safe_data["text"],
-                safe_data["photo_id"],
-                safe_data["phone_number"],
-                safe_data["publish_date"],
-                safe_data["congrat_type"]
+                data['user_id'],
+                data.get('username'),
+                data['type'],
+                data.get('subtype'),
+                data.get('from_name'),
+                data.get('to_name'),
+                data['text'],
+                data.get('photo_id'),
+                data.get('phone_number'),
+                data.get('publish_date'),
+                data.get('congrat_type')
             ))
             app_id = cur.lastrowid
             conn.commit()
-            logger.info(f"Заявка успешно добавлена с ID {app_id}")
             return app_id
-
     except Exception as e:
         logger.error(f"Ошибка добавления заявки: {e}", exc_info=True)
         return None
@@ -428,6 +405,10 @@ async def handle_carpool_phone(update: Update, context: CallbackContext) -> int:
         return RIDE_PHONE_INPUT
 
     context.user_data["phone_number"] = phone
+    # Сохраняем photo_id, если есть фото
+    if update.message.photo:
+        context.user_data["photo_id"] = update.message.photo[-1].file_id  # Лучшее качество
+
     ride_data = context.user_data
     text = (
         f"🚗 <b>{ride_data['ride_type']}</b>\n"
@@ -458,11 +439,19 @@ async def handle_carpool_phone(update: Update, context: CallbackContext) -> int:
         return WAIT_CENSOR_APPROVAL
 
     try:
-        await context.bot.send_message(
-            chat_id=CHANNEL_ID,
-            text=censored_text,
-            parse_mode="HTML"
-        )
+        if context.user_data.get("photo_id"):
+            await context.bot.send_photo(
+                chat_id=CHANNEL_ID,
+                photo=context.user_data["photo_id"],
+                caption=censored_text,
+                parse_mode="HTML"
+            )
+        else:
+            await context.bot.send_message(
+                chat_id=CHANNEL_ID,
+                text=censored_text,
+                parse_mode="HTML"
+            )
         await safe_reply_text(update, "✅ Ваша заявка опубликована!")
     except Exception as e:
         logger.error(f"Ошибка публикации попутки: {e}")
@@ -593,9 +582,17 @@ async def get_congrat_date(update: Update, context: CallbackContext) -> int:
 
 async def get_custom_congrat_message(update: Update, context: CallbackContext) -> int:
     text = update.message.text.strip()
+    if not text:
+        await safe_reply_text(update, "Пожалуйста, введите текст поздравления.")
+        return CUSTOM_CONGRAT_MESSAGE_INPUT
     if len(text) > MAX_CONGRAT_TEXT_LENGTH:
         await safe_reply_text(update, f"Текст слишком длинный (максимум {MAX_CONGRAT_TEXT_LENGTH} символов).")
         return CUSTOM_CONGRAT_MESSAGE_INPUT
+    
+    # Сохраняем фото, если есть
+    if update.message.photo:
+        context.user_data["photo_id"] = update.message.photo[-1].file_id
+
     from_name = context.user_data.get("from_name", "")
     to_name = context.user_data.get("to_name", "")
     context.user_data["text"] = f"{from_name} поздравляет {to_name}!{text}"
@@ -633,6 +630,10 @@ async def handle_announce_text_input(update: Update, context: CallbackContext) -
         return ANNOUNCE_TEXT_INPUT
     text = text.strip()
 
+    # Сохраняем фото, если есть
+    if update.message.photo:
+        context.user_data["photo_id"] = update.message.photo[-1].file_id
+
     if len(text) > MAX_TEXT_LENGTH:
         await safe_reply_text(update, f"Текст слишком длинный (максимум {MAX_TEXT_LENGTH} символов).")
         return ANNOUNCE_TEXT_INPUT
@@ -656,14 +657,6 @@ async def handle_announce_text_input(update: Update, context: CallbackContext) -
     context.user_data["current_state"] = PHONE_INPUT
     return PHONE_INPUT
 
-async def get_phone_number(update: Update, context: CallbackContext) -> int:
-    phone = update.message.text.strip()
-    if not validate_phone(phone):
-        await safe_reply_text(update, "Неверный формат номера. Используйте +7... или 8...")
-        return PHONE_INPUT
-    context.user_data["phone_number"] = phone
-    return await complete_request(update, context)
-
 # ========== ОБРАБОТЧИКИ НОВОСТЕЙ ==========
 async def get_news_phone_number(update: Update, context: CallbackContext) -> int:
     phone = update.message.text.strip()
@@ -677,9 +670,16 @@ async def get_news_phone_number(update: Update, context: CallbackContext) -> int
 
 async def get_news_text(update: Update, context: CallbackContext) -> int:
     text = update.message.text.strip()
+    if not text:
+        await safe_reply_text(update, "Пожалуйста, введите текст новости.")
+        return NEWS_TEXT_INPUT
     if len(text) > MAX_ANNOUNCE_NEWS_TEXT_LENGTH:
         await safe_reply_text(update, f"Текст слишком длинный (максимум {MAX_ANNOUNCE_NEWS_TEXT_LENGTH} символов).")
         return NEWS_TEXT_INPUT
+
+    # Сохраняем фото, если есть
+    if update.message.photo:
+        context.user_data["photo_id"] = update.message.photo[-1].file_id
 
     censored_text, has_bad = await censor_text(text)
     if has_bad:
@@ -722,13 +722,12 @@ async def complete_request(update: Update, context: CallbackContext) -> int:
 
     app_id = add_application(app_data)
     if app_id:
-        # === КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: Отправляем уведомление админу для ВСЕХ заявок, кроме "Попутки" ===
-        if user_data['type'] != "announcement" or user_data.get('subtype') != "ride":
-            if ADMIN_CHAT_ID:
-                await notify_admin_new_application(context.bot, app_id, app_data)
-            else:
-                logger.warning("ADMIN_CHAT_ID не задан. Уведомление администратору не отправлено.")
-        
+        # Отправляем уведомление администратору
+        if ADMIN_CHAT_ID:
+            await notify_admin_new_application(context.bot, app_id, app_data)
+        else:
+            logger.warning("ADMIN_CHAT_ID не задан. Уведомление администратору не отправлено.")
+
         if user_data['type'] == "news":
             await publish_to_channel(app_id, context.bot)
             await safe_reply_text(update, "✅ Ваша новость опубликована!")
@@ -739,41 +738,25 @@ async def complete_request(update: Update, context: CallbackContext) -> int:
 
     context.user_data.clear()
     return ConversationHandler.END
-async def notify_admin_new_application(bot: Bot, app_id: int, app_data: dict):
-    """Отправляет админу уведомление о новой заявке."""
-    try:
-        text = f"📥 Новая заявка #{app_id}\n"
-        text += f"Тип: {REQUEST_TYPES.get(app_data['type'], {}).get('name', app_data['type'])}\n"
-        if app_data.get('subtype'):
-            text += f"Подтип: {app_data['subtype']}\n"
-        if app_data.get('from_name'):
-            text += f"От: {app_data['from_name']}\n"
-        if app_data.get('to_name'):
-            text += f"Кому: {app_data['to_name']}\n"
-        text += f"Текст:\n{app_data['text']}\n"
-        if app_data.get('phone_number'):
-            text += f"📞 Телефон: {app_data['phone_number']}\n"
 
-        # Кнопки для админа
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("✅ Одобрить", callback_data=f"approve_{app_id}"),
-             InlineKeyboardButton("❌ Отклонить", callback_data=f"reject_{app_id}")]
-        ])
-
-        await bot.send_message(chat_id=ADMIN_CHAT_ID, text=text, reply_markup=keyboard)
-    except Exception as e:
-        logger.error(f"Ошибка отправки уведомления админу для заявки #{app_id}: {e}")
-        
 async def publish_to_channel(app_id: int, bot: Bot):
     """Публикует заявку в канал."""
     try:
         app = get_application_details(app_id)
         if app:
-            await bot.send_message(
-                chat_id=CHANNEL_ID,
-                text=app['text'],
-                parse_mode="HTML"
-            )
+            if app['photo_id']:
+                await bot.send_photo(
+                    chat_id=CHANNEL_ID,
+                    photo=app['photo_id'],
+                    caption=app['text'],
+                    parse_mode="HTML"
+                )
+            else:
+                await bot.send_message(
+                    chat_id=CHANNEL_ID,
+                    text=app['text'],
+                    parse_mode="HTML"
+                )
             mark_application_as_published(app_id)
     except Exception as e:
         logger.error(f"Ошибка публикации в канал для заявки #{app_id}: {e}")
@@ -923,6 +906,57 @@ async def check_pending_applications():
     except Exception as e:
         logger.error(f"Ошибка проверки заявок: {e}")
 
+# ========== Уведомление администратора о новой заявке ==========
+async def notify_admin_new_application(bot: Bot, app_id: int, app_data: dict):
+    """Отправляет заявку администратору для модерации."""
+    try:
+        # Формируем текст заявки
+        app_type = REQUEST_TYPES.get(app_data['type'], {}).get('name', 'Заявка')
+        subtype = ANNOUNCE_SUBTYPES.get(app_data['subtype'], '') if app_data.get('subtype') else ''
+        full_type = f"{app_type}" + (f" ({subtype})" if subtype else '')
+        
+        phone = f"• Телефон: {app_data['phone_number']}" if app_data.get('phone_number') else ""
+        has_photo = "✅" if app_data.get('photo_id') else "❌"
+        
+        caption = (
+            f"📨 Новая заявка #{app_id}\n"
+            f"• Тип: {full_type}\n"
+            f"• Фото: {has_photo}\n"
+            f"{phone}\n"
+            f"• От: @{app_data.get('username') or 'N/A'} (ID: {app_data['user_id']})\n"
+            f"• Текст: {app_data['text']}"
+        )
+
+        # Создаем клавиатуру только для заявок, требующих модерации
+        if app_data['type'] != "news":
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ Одобрить", callback_data=f"approve_{app_id}"),
+                 InlineKeyboardButton("❌ Отклонить", callback_data=f"reject_{app_id}")]
+            ])
+        else:
+            keyboard = None
+
+        # Отправляем фото или текст
+        if app_data.get('photo_id'):
+            await bot.send_photo(
+                chat_id=ADMIN_CHAT_ID,
+                photo=app_data['photo_id'],
+                caption=caption,
+                reply_markup=keyboard,
+                parse_mode="HTML"
+            )
+        else:
+            await bot.send_message(
+                chat_id=ADMIN_CHAT_ID,
+                text=caption,
+                reply_markup=keyboard,
+                parse_mode="HTML"
+            )
+        
+        logger.info(f"Заявка #{app_id} отправлена администратору.")
+    except Exception as e:
+        logger.error(f"Ошибка отправки заявки #{app_id} администратору: {e}", exc_info=True)
+
 # ========== Инициализация бота ==========
 async def initialize_bot():
     global application
@@ -932,11 +966,10 @@ async def initialize_bot():
         application = Application.builder().token(TOKEN).build()
 
         # Создаем ConversationHandler
-        # Ключевое исправление: добавляем handle_carpool_start в entry_points
         conv_handler = ConversationHandler(
             entry_points=[
                 CommandHandler('start', start_command),
-                CallbackQueryHandler(handle_carpool_start, pattern="^carpool$")  # Теперь "Попутка" запускает диалог
+                CallbackQueryHandler(handle_carpool_start, pattern="^carpool$")
             ],
             states={
                 TYPE_SELECTION: [CallbackQueryHandler(handle_type_selection)],
@@ -970,7 +1003,6 @@ async def initialize_bot():
         application.add_handler(conv_handler)
         application.add_handler(CommandHandler("help", help_command))
         application.add_handler(CommandHandler("pending", pending_command))
-        # ❌ Убрано: CallbackQueryHandler(handle_carpool_start, pattern="^carpool$") — теперь он внутри conv_handler
         application.add_handler(CallbackQueryHandler(admin_approve_application, pattern="^approve_\\d+$"))
         application.add_handler(CallbackQueryHandler(admin_reject_application, pattern="^reject_\\d+$"))
 
@@ -1043,8 +1075,3 @@ async def root():
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=PORT)
-
-
-
-
-
