@@ -625,6 +625,13 @@ async def handle_announce_subtype_selection(update: Update, context: CallbackCon
 
 async def handle_announce_text_input(update: Update, context: CallbackContext) -> int:
     text = update.message.text or update.message.caption
+    if update.message.photo:
+        context.user_data['photo_id'] = update.message.photo[-1].file_id
+    if update.message.photo:
+        context.user_data['photo_id'] = update.message.photo[-1].file_id
+    # Сохраняем фото, если есть
+    if update.message.photo:
+        context.user_data['photo_id'] = update.message.photo[-1].file_id
     if not text:
         await safe_reply_text(update, "Пожалуйста, введите текст к вашему сообщению.")
         return ANNOUNCE_TEXT_INPUT
@@ -738,6 +745,44 @@ async def complete_request(update: Update, context: CallbackContext) -> int:
 
     context.user_data.clear()
     return ConversationHandler.END
+
+
+async def notify_admin_new_application(bot: Bot, app_id: int, app_data: dict):
+    """Отправляет админу уведомление о новой заявке."""
+    try:
+        text = f"📥 Новая заявка #{app_id}\n"
+        text += f"Тип: {REQUEST_TYPES.get(app_data['type'], {}).get('name', app_data['type'])}\n"
+        if app_data.get('subtype'):
+            text += f"Подтип: {app_data['subtype']}\n"
+        if app_data.get('from_name'):
+            text += f"От: {app_data['from_name']}\n"
+        if app_data.get('to_name'):
+            text += f"Кому: {app_data['to_name']}\n"
+        text += f"Текст:\n{app_data['text']}\n"
+        if app_data.get('phone_number'):
+            text += f"📞 Телефон: {app_data['phone_number']}\n"
+
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Одобрить", callback_data=f"approve_{app_id}"),
+             InlineKeyboardButton("❌ Отклонить", callback_data=f"reject_{app_id}")]
+        ])
+
+        if app_data.get('photo_id'):
+            await bot.send_photo(
+                chat_id=ADMIN_CHAT_ID,
+                photo=app_data['photo_id'],
+                caption=text,
+                reply_markup=keyboard
+            )
+        else:
+            await bot.send_message(
+                chat_id=ADMIN_CHAT_ID,
+                text=text,
+                reply_markup=keyboard
+            )
+    except Exception as e:
+        logger.error(f"Ошибка отправки уведомления админу для заявки #{app_id}: {e}")
+
 
 async def publish_to_channel(app_id: int, bot: Bot):
     """Публикует заявку в канал."""
