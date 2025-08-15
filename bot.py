@@ -724,6 +724,13 @@ async def get_news_text(update: Update, context: CallbackContext) -> int:
     context.user_data["text"] = censored_text
     return await complete_request(update, context)
 
+
+async def handle_any_photo(update: Update, context: CallbackContext) -> None:
+    if update.message.photo:
+        context.user_data["photo_id"] = update.message.photo[-1].file_id
+        await safe_reply_text(update, "📷 Фото сохранено. Продолжайте ввод данных.")
+
+
 # ========== ОБЩИЕ ФУНКЦИИ ==========
 async def complete_request(update: Update, context: CallbackContext) -> int:
     user = update.effective_user
@@ -865,11 +872,13 @@ async def admin_approve_application(update: Update, context: CallbackContext) ->
             await safe_edit_message_text(query, "Заявка не найдена.")
             return
         if update_application_status(app_id, 'approved'):
-            await safe_edit_message_text(query, f"Заявка #{app_id} одобрена.")
+            await safe_edit_message_text(query, f"Заявка #{app_id} одобрена и опубликована.")
+            # Публикуем сразу
+            await publish_to_channel(app_id, context.bot)
         else:
             await safe_edit_message_text(query, f"Ошибка одобрения заявки #{app_id}.")
     except Exception as e:
-        logger.error(f"Ошибка при одобрении заявки: {e}")
+        logger.error(f"Ошибка при одобрении заявки: {e}", exc_info=True)
         await safe_edit_message_text(query, "Произошла ошибка.")
 
 async def admin_reject_application(update: Update, context: CallbackContext) -> None:
