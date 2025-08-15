@@ -774,216 +774,13 @@ async def complete_request(update: Update, context: CallbackContext) -> int:
 
 
 async def notify_admin_new_application(bot: Bot, app_id: int, app_data: dict):
-    """Отправляет админу уведомление о новой заявке."""
-    try:
-        text = f"📥 Новая заявка #{app_id}\n"
-        text += f"Тип: {REQUEST_TYPES.get(app_data['type'], {}).get('name', app_data['type'])}\n"
-        if app_data.get('subtype'):
-            text += f"Подтип: {app_data['subtype']}\n"
-        if app_data.get('from_name'):
-            text += f"От: {app_data['from_name']}\n"
-        if app_data.get('to_name'):
-            text += f"Кому: {app_data['to_name']}\n"
-        text += f"Текст:\n{app_data['text']}\n"
-        if app_data.get('phone_number'):
-            text += f"📞 Телефон: {app_data['phone_number']}\n"
-
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("✅ Одобрить", callback_data=f"approve_{app_id}"),
-             InlineKeyboardButton("❌ Отклонить", callback_data=f"reject_{app_id}")]
-        ])
-
-        if app_data.get('photo_id'):
-            await bot.send_photo(
-                chat_id=ADMIN_CHAT_ID,
-                photo=app_data['photo_id'],
-                caption=text,
-                reply_markup=keyboard
-            )
-        else:
-            await bot.send_message(
-                chat_id=ADMIN_CHAT_ID,
-                text=text,
-                reply_markup=keyboard
-            )
-    except Exception as e:
-        logger.error(f"Ошибка отправки уведомления админу для заявки #{app_id}: {e}")
-
-
-async def publish_to_channel(app_id: int, bot: Bot):
-    """Публикует заявку в канал."""
-    try:
-        app = get_application_details(app_id)
-        if app:
-            if app['photo_id']:
-                await bot.send_photo(
-                    chat_id=CHANNEL_ID,
-                    photo=app['photo_id'],
-                    caption=app['text'],
-                    parse_mode="HTML"
-                )
-            else:
-                await bot.send_message(
-                    chat_id=CHANNEL_ID,
-                    text=app['text'],
-                    parse_mode="HTML"
-                )
-            mark_application_as_published(app_id)
-    except Exception as e:
-        logger.error(f"Ошибка публикации в канал для заявки #{app_id}: {e}")
-
-# ========== ОБРАБОТЧИКИ КНОПОК ==========
-async def back_to_start(update: Update, context: CallbackContext) -> int:
-    """Возвращает в начало диалога."""
-    if update.callback_query:
-        query = update.callback_query
-        await query.answer()
-        await query.edit_message_text("Выберите действие:")
-    context.user_data.clear()
-    keyboard = [
-        [InlineKeyboardButton("🚗 Попутка", callback_data="carpool")],
-    ]
-    for key, info in REQUEST_TYPES.items():
-        button = InlineKeyboardButton(f"{info['icon']} {info['name']}", callback_data=key)
-        keyboard.append([button])
-    
-    await safe_reply_text(
-        update,
-        "👋 Здравствуйте!\nВыберите, что хотите отправить в канал:",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-    return TYPE_SELECTION
-
-async def cancel_command(update: Update, context: CallbackContext) -> int:
-    """Отменяет текущий диалог."""
-    await safe_reply_text(update, "Действие отменено. Используйте /start для начала.")
-    context.user_data.clear()
-    return ConversationHandler.END
-
-async def admin_approve_application(update: Update, context: CallbackContext) -> None:
-    query = update.callback_query
-    await query.answer()
-    if query.from_user.id != ADMIN_CHAT_ID:
-        return
-    try:
-        app_id = int(query.data.split('_')[1])
-        app_details = get_application_details(app_id)
-        if not app_details:
-            await safe_edit_message_text(query, "Заявка не найдена.")
-            return
-        if update_application_status(app_id, 'approved'):
-            await safe_edit_message_text(query, f"Заявка #{app_id} одобрена и опубликована.")
-            # Публикуем сразу
-            await publish_to_channel(app_id, context.bot)
-        else:
-            await safe_edit_message_text(query, f"Ошибка одобрения заявки #{app_id}.")
-    except Exception as e:
-        logger.error(f"Ошибка при одобрении заявки: {e}", exc_info=True)
-        await safe_edit_message_text(query, "Произошла ошибка.")
-
-async def admin_reject_application(update: Update, context: CallbackContext) -> None:
-    query = update.callback_query
-    await query.answer()
-    if query.from_user.id != ADMIN_CHAT_ID:
-        return
-    try:
-        app_id = int(query.data.split('_')[1])
-        if update_application_status(app_id, 'rejected'):
-            await safe_edit_message_text(query, f"Заявка #{app_id} отклонена.")
-        else:
-            await safe_edit_message_text(query, f"Ошибка отклонения заявки #{app_id}.")
-    except Exception as e:
-        logger.error(f"Ошибка при отклонении заявки: {e}")
-        await safe_edit_message_text(query, "Произошла ошибка.")
-
-# ========== ДОПОЛНИТЕЛЬНЫЕ КОМАНДЫ ==========
-async def help_command(update: Update, context: CallbackContext) -> None:
-    help_text = (
-        "ℹ️ *Помощь по боту*\n\n"
-        "Этот бот предназначен для отправки заявок в группу *Небольшой Мир: Николаевск*.\n\n"
-        "📌 *Как использовать:*\n"
-        "1. Нажмите /start.\n"
-        "2. Выберите тип заявки: Поздравление, Объявления или Новость от жителя.\n"
-        "3. Следуйте инструкциям бота.\n"
-        "4. Ваша заявка будет отправлена на модерацию (кроме попуток).\n\n"
-        "Если у вас есть вопросы, обратитесь к администратору группы."
-    )
-    await safe_reply_text(update, help_text, parse_mode="Markdown")
-
-async def pending_command(update: Update, context: CallbackContext) -> None:
-    if update.effective_chat.id != ADMIN_CHAT_ID:
-        await safe_reply_text(update, "❌ Эта команда доступна только администратору.")
-        return
-    try:
-        with get_db_connection() as conn:
-            conn.row_factory = sqlite3.Row
-            cur = conn.cursor()
-            cur.execute("""
-                SELECT id, type, subtype, from_name, to_name, text, photo_id, phone_number
-                FROM applications
-                WHERE status = 'pending'
-                ORDER BY created_at DESC
-                LIMIT 10
-            """)
-            apps = cur.fetchall()
-        if not apps:
-            await safe_reply_text(update, "📭 Нет заявок, ожидающих модерации.")
-            return
-        for app in apps:
-            app_type = REQUEST_TYPES.get(app['type'], {}).get('name', 'Заявка')
-            message = f"#{app['id']} ({app_type})\n{app['text']}"
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("✅ Одобрить", callback_data=f"approve_{app['id']}"),
-                 InlineKeyboardButton("❌ Отклонить", callback_data=f"reject_{app['id']}")]
-            ])
-            await context.bot.send_message(
-                chat_id=ADMIN_CHAT_ID,
-                text=message,
-                reply_markup=keyboard
-            )
-    except Exception as e:
-        logger.error(f"Ошибка команды /pending: {e}")
-        await safe_reply_text(update, "❌ Ошибка при получении заявок.")
-
-# ========== ФУНКЦИЯ ПРОВЕРКИ И ПУБЛИКАЦИИ ЗАЯВОК ==========
-async def check_pending_applications():
-    global application
-    if application is None:
-        logger.warning("Application не инициализирован. Пропуск публикации.")
-        return
-
-    try:
-        applications = get_approved_unpublished_applications()
-        bot = application.bot
-
-        for app in applications:
-            try:
-                if app['photo_id']:
-                    await bot.send_photo(
-                        chat_id=CHANNEL_ID,
-                        photo=app['photo_id'],
-                        caption=app['text'],
-                        parse_mode="HTML"
-                    )
-                else:
-                    await bot.send_message(
-                        chat_id=CHANNEL_ID,
-                        text=app['text'],
-                        parse_mode="HTML"
-                    )
-                mark_application_as_published(app['id'])
-                logger.info(f"Опубликовано сообщение #{app['id']}")
-                await asyncio.sleep(1)
-            except Exception as e:
-                logger.error(f"Ошибка обработки заявки #{app['id']}: {e}")
-    except Exception as e:
-        logger.error(f"Ошибка проверки заявок: {e}")
-
-# ========== Уведомление администратора о новой заявке ==========
-async def notify_admin_new_application(bot: Bot, app_id: int, app_data: dict):
     """Отправляет заявку администратору для модерации."""
     try:
-        # Формируем текст заявки
+        # Получаем свежие данные из базы, чтобы не потерять photo_id
+        app_row = get_application_details(app_id)
+        if app_row:
+            app_data = dict(app_row)
+
         app_type = REQUEST_TYPES.get(app_data['type'], {}).get('name', 'Заявка')
         subtype = ANNOUNCE_SUBTYPES.get(app_data['subtype'], '') if app_data.get('subtype') else ''
         full_type = f"{app_type}" + (f" ({subtype})" if subtype else '')
@@ -992,15 +789,19 @@ async def notify_admin_new_application(bot: Bot, app_id: int, app_data: dict):
         has_photo = "✅" if app_data.get('photo_id') else "❌"
         
         caption = (
-            f"📨 Новая заявка #{app_id}\n"
-            f"• Тип: {full_type}\n"
-            f"• Фото: {has_photo}\n"
-            f"{phone}\n"
-            f"• От: @{app_data.get('username') or 'N/A'} (ID: {app_data['user_id']})\n"
+            f"📨 Новая заявка #{app_id}
+"
+            f"• Тип: {full_type}
+"
+            f"• Фото: {has_photo}
+"
+            f"{phone}
+"
+            f"• От: @{app_data.get('username') or 'N/A'} (ID: {app_data['user_id']})
+"
             f"• Текст: {app_data['text']}"
         )
 
-        # Создаем клавиатуру только для заявок, требующих модерации
         if app_data['type'] != "news":
             keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton("✅ Одобрить", callback_data=f"approve_{app_id}"),
@@ -1027,6 +828,74 @@ async def notify_admin_new_application(bot: Bot, app_id: int, app_data: dict):
             )
         
         logger.info(f"Заявка #{app_id} отправлена администратору.")
+    except Exception as e:
+        logger.error(f"Ошибка отправки заявки #{app_id} администратору: {e}", exc_info=True)
+(f"Опубликовано сообщение #{app['id']}")
+                await asyncio.sleep(1)
+            except Exception as e:
+                logger.error(f"Ошибка обработки заявки #{app['id']}: {e}")
+    except Exception as e:
+        logger.error(f"Ошибка проверки заявок: {e}")
+
+# ========== Уведомление администратора о новой заявке ==========
+async def notify_admin_new_application(bot: Bot, app_id: int, app_data: dict):
+    """Отправляет заявку администратору для модерации."""
+    try:
+        # Получаем свежие данные из базы, чтобы не потерять photo_id
+        app_row = get_application_details(app_id)
+        if app_row:
+            app_data = dict(app_row)
+
+        app_type = REQUEST_TYPES.get(app_data['type'], {}).get('name', 'Заявка')
+        subtype = ANNOUNCE_SUBTYPES.get(app_data['subtype'], '') if app_data.get('subtype') else ''
+        full_type = f"{app_type}" + (f" ({subtype})" if subtype else '')
+        
+        phone = f"• Телефон: {app_data['phone_number']}" if app_data.get('phone_number') else ""
+        has_photo = "✅" if app_data.get('photo_id') else "❌"
+        
+        caption = (
+            f"📨 Новая заявка #{app_id}
+"
+            f"• Тип: {full_type}
+"
+            f"• Фото: {has_photo}
+"
+            f"{phone}
+"
+            f"• От: @{app_data.get('username') or 'N/A'} (ID: {app_data['user_id']})
+"
+            f"• Текст: {app_data['text']}"
+        )
+
+        if app_data['type'] != "news":
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ Одобрить", callback_data=f"approve_{app_id}"),
+                 InlineKeyboardButton("❌ Отклонить", callback_data=f"reject_{app_id}")]
+            ])
+        else:
+            keyboard = None
+
+        # Отправляем фото или текст
+        if app_data.get('photo_id'):
+            await bot.send_photo(
+                chat_id=ADMIN_CHAT_ID,
+                photo=app_data['photo_id'],
+                caption=caption,
+                reply_markup=keyboard,
+                parse_mode="HTML"
+            )
+        else:
+            await bot.send_message(
+                chat_id=ADMIN_CHAT_ID,
+                text=caption,
+                reply_markup=keyboard,
+                parse_mode="HTML"
+            )
+        
+        logger.info(f"Заявка #{app_id} отправлена администратору.")
+    except Exception as e:
+        logger.error(f"Ошибка отправки заявки #{app_id} администратору: {e}", exc_info=True)
+(f"Заявка #{app_id} отправлена администратору.")
     except Exception as e:
         logger.error(f"Ошибка отправки заявки #{app_id} администратору: {e}", exc_info=True)
 
