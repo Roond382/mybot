@@ -728,6 +728,7 @@ async def get_phone_number(update: Update, context: CallbackContext) -> int:
 async def handle_censor_choice(update: Update, context: CallbackContext) -> int:
     query = update.callback_query
     await query.answer()
+    
     if query.data == "accept_censor":
         context.user_data["text"] = context.user_data["censored_text"]
         return await complete_request(update, context)
@@ -736,12 +737,16 @@ async def handle_censor_choice(update: Update, context: CallbackContext) -> int:
             query, 
             "Введите исправленный текст:", 
             reply_markup=InlineKeyboardMarkup(BACK_BUTTON)
-        if context.user_data.get("type") == "congrat":
+        )
+        
+        request_type = context.user_data.get("type")
+        if request_type == "congrat":
             return CUSTOM_CONGRAT_MESSAGE_INPUT
-        elif context.user_data.get("type") == "announcement":
+        elif request_type == "announcement":
             return ANNOUNCE_TEXT_INPUT
-        elif context.user_data.get("type") == "news":
+        elif request_type == "news":
             return NEWS_TEXT_INPUT
+            
     return ConversationHandler.END
 
 # ========== Завершение заявки ==========
@@ -1037,3 +1042,4 @@ async def root():
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=PORT)
+
