@@ -40,6 +40,9 @@ DEFAULT_BAD_WORDS = ["хуй", "пизда", "блять", "блядь", "еба
 MAX_NAME_LENGTH = 50
 CONVERSATION_TIMEOUT_MINUTES = 15
 
+# ========== НОВАЯ ФИЧА: Автопубликация попуток ==========
+AUTO_PUBLISH_CARPOOL = os.getenv('AUTO_PUBLISH_CARPOOL', '').lower() == 'true'
+
 # ========== Проверка обязательных переменных ==========
 missing_vars = []
 if not TOKEN:
@@ -48,7 +51,6 @@ if not CHANNEL_ID:
     missing_vars.append("CHANNEL_ID")
 if not ADMIN_CHAT_ID:
     missing_vars.append("ADMIN_CHAT_ID")
-
 if missing_vars:
     raise ValueError(f"Ключевые переменные окружения не установлены: {', '.join(missing_vars)}")
 
@@ -157,12 +159,10 @@ def _init_db_sync():
                 ride_seats TEXT
             )
         """)
-        
         # Проверка и добавление отсутствующих колонок
         cursor = conn.cursor()
         cursor.execute("PRAGMA table_info(applications)")
         columns = {row[1] for row in cursor.fetchall()}
-        
         if 'photo_id' not in columns:
             conn.execute("ALTER TABLE applications ADD COLUMN photo_id TEXT")
         if 'ride_from' not in columns:
@@ -173,7 +173,6 @@ def _init_db_sync():
             conn.execute("ALTER TABLE applications ADD COLUMN ride_date TEXT")
         if 'ride_seats' not in columns:
             conn.execute("ALTER TABLE applications ADD COLUMN ride_seats TEXT")
-            
         conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_approved_unpublished 
             ON applications(status, published_at) 
@@ -311,7 +310,8 @@ async def start_command(update: Update, context: CallbackContext) -> int:
     ]
     await safe_reply_text(
         update,
-        "👋 Здравствуйте!\nВыберите, что хотите отправить в канал:",
+        "👋 Здравствуйте!\n"
+        "Выберите, что хотите отправить в канал:",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
     return TYPE_SELECTION
@@ -336,7 +336,6 @@ async def handle_carpool_start(update: Update, context: CallbackContext) -> int:
     await query.answer()
     context.user_data["type"] = "announcement"
     context.user_data["subtype"] = "ride"
-
     keyboard = [
         [InlineKeyboardButton("Ищу попутчиков", callback_data="carpool_need")],
         [InlineKeyboardButton("Предлагаю поездку", callback_data="carpool_offer")],
@@ -402,8 +401,11 @@ async def handle_carpool_phone(update: Update, context: CallbackContext) -> int:
         await safe_reply_text(update, "Введите корректный номер телефона (например: +79610904569).")
         return RIDE_PHONE_INPUT
 
+    if not await can_submit_request(update.effective_user.id):
+        await safe_reply_text(update, "❌ Слишком много запросов. Попробуйте позже.")
+        return ConversationHandler.END
+
     context.user_data["phone_number"] = phone
-    
     ride_data = context.user_data
     text = (
         f"🚗 <b>{ride_data['ride_type']}</b>\n"
@@ -414,10 +416,6 @@ async def handle_carpool_phone(update: Update, context: CallbackContext) -> int:
         f"📞 <b>Телефон:</b> {phone}\n"
         f"#ПопуткаНиколаевск"
     )
-
-    if not await can_submit_request(update.effective_user.id):
-        await safe_reply_text(update, "❌ Слишком много запросов. Попробуйте позже.")
-        return ConversationHandler.END
 
     censored_text, has_bad = censor_text(text)
     if has_bad:
@@ -447,13 +445,30 @@ async def handle_carpool_phone(update: Update, context: CallbackContext) -> int:
             'ride_seats': ride_data['ride_seats'],
             'photo_id': context.user_data.get('photo_id')
         }
-        
-        app_id = await add_application(app_data)
-        if app_id:
-            await notify_admin_new_application(context.bot, app_id)
-            await safe_reply_text(update, f"✅ Заявка #{app_id} отправлена на модерацию.")
+
+        # === НОВАЯ ЛОГИКА: Автопубликация попуток ===
+        if AUTO_PUBLISH_CARPOOL:
+            # Добавляем в базу
+            app_id = await add_application(app_data)
+            if app_id:
+                # Публикуем сразу
+                success = await publish_to_channel(app_id, context.bot)
+                if success:
+                    await safe_reply_text(update, f"✅ Попутка сразу опубликована в канал!")
+                    logger.info(f"Попутка #{app_id} опубликована без модерации.")
+                else:
+                    await safe_reply_text(update, "❌ Ошибка публикации. Заявка отправлена на модерацию.")
+                    await notify_admin_new_application(context.bot, app_id)
+            else:
+                await safe_reply_text(update, "❌ Ошибка при создании заявки.")
         else:
-            await safe_reply_text(update, "❌ Ошибка при создании заявки.")
+            # Стандартный путь — на модерацию
+            app_id = await add_application(app_data)
+            if app_id:
+                await notify_admin_new_application(context.bot, app_id)
+                await safe_reply_text(update, f"✅ Заявка #{app_id} отправлена на модерацию.")
+            else:
+                await safe_reply_text(update, "❌ Ошибка при создании заявки.")
     except Exception as e:
         logger.error(f"Ошибка публикации попутки: {e}")
         await safe_reply_text(update, "❌ Не удалось опубликовать. Попробуйте позже.")
@@ -467,7 +482,6 @@ async def handle_type_selection(update: Update, context: CallbackContext) -> int
     await query.answer()
     request_type = query.data
     context.user_data["type"] = request_type
-
     if request_type == "news":
         await safe_edit_message_text(
             query,
@@ -515,7 +529,6 @@ async def get_recipient_name(update: Update, context: CallbackContext) -> int:
         await safe_reply_text(update, f"Пожалуйста, введите корректное имя (от 2 до {MAX_NAME_LENGTH} символов).")
         return RECIPIENT_NAME_INPUT
     context.user_data["to_name"] = recipient_name
-
     keyboard = [
         [InlineKeyboardButton(holiday, callback_data=f"holiday_{holiday}")]
         for holiday in HOLIDAYS
@@ -541,18 +554,15 @@ async def handle_congrat_holiday_choice(update: Update, context: CallbackContext
             reply_markup=InlineKeyboardMarkup(BACK_BUTTON)
         )
         return CUSTOM_CONGRAT_MESSAGE_INPUT
-
     holiday = query.data.replace("holiday_", "")
     if holiday not in HOLIDAYS:
         await safe_edit_message_text(query, "❌ Неизвестный праздник. Пожалуйста, выберите из списка.")
         return ConversationHandler.END
-
     template = HOLIDAY_TEMPLATES.get(holiday, "С праздником!")
     from_name = context.user_data.get("from_name", "")
     to_name = context.user_data.get("to_name", "")
     context.user_data["text"] = f"{from_name} поздравляет {to_name} с {holiday}! {template}"
     context.user_data["congrat_type"] = "standard"
-
     keyboard = [
         [InlineKeyboardButton("📅 Сегодня", callback_data="publish_today")],
         [InlineKeyboardButton("📆 Указать дату", callback_data="publish_custom_date")],
@@ -601,15 +611,12 @@ async def get_custom_congrat_message(update: Update, context: CallbackContext) -
     if len(text) > MAX_CONGRAT_TEXT_LENGTH:
         await safe_reply_text(update, f"Текст слишком длинный (максимум {MAX_CONGRAT_TEXT_LENGTH} символов).")
         return CUSTOM_CONGRAT_MESSAGE_INPUT
-    
     if update.message.photo:
         context.user_data["photo_id"] = update.message.photo[-1].file_id
-
     from_name = context.user_data.get("from_name", "")
     to_name = context.user_data.get("to_name", "")
     context.user_data["text"] = f"{from_name} поздравляет {to_name}! {text}"
     context.user_data["congrat_type"] = "custom"
-
     keyboard = [
         [InlineKeyboardButton("📅 Сегодня", callback_data="publish_today")],
         [InlineKeyboardButton("📆 Указать дату", callback_data="publish_custom_date")],
@@ -628,11 +635,11 @@ async def handle_announce_subtype_selection(update: Update, context: CallbackCon
     await query.answer()
     subtype_key = query.data.replace("subtype_", "")
     context.user_data["subtype"] = subtype_key
-
     example = EXAMPLE_TEXTS["announcement"].get(subtype_key, "")
     await safe_edit_message_text(
         query,
-        f"Введите текст объявления (до {MAX_TEXT_LENGTH} символов).\nПример: {example}",
+        f"Введите текст объявления (до {MAX_TEXT_LENGTH} символов).\n"
+        f"Пример: {example}",
         reply_markup=InlineKeyboardMarkup(BACK_BUTTON)
     )
     return ANNOUNCE_TEXT_INPUT
@@ -642,15 +649,12 @@ async def handle_announce_text_input(update: Update, context: CallbackContext) -
     if not text:
         await safe_reply_text(update, "Пожалуйста, введите текст к вашему сообщению.")
         return ANNOUNCE_TEXT_INPUT
-    
     text = text.strip()
     if update.message.photo:
         context.user_data["photo_id"] = update.message.photo[-1].file_id
-
     if len(text) > MAX_TEXT_LENGTH:
         await safe_reply_text(update, f"Текст слишком длинный (максимум {MAX_TEXT_LENGTH} символов).")
         return ANNOUNCE_TEXT_INPUT
-
     censored_text, has_bad = censor_text(text)
     if has_bad:
         context.user_data["censored_text"] = censored_text
@@ -660,11 +664,11 @@ async def handle_announce_text_input(update: Update, context: CallbackContext) -
         ]
         await safe_reply_text(
             update,
-            f"⚠️ В тексте найдены запрещённые слова (заменены на ***):\n{censored_text}\nПодтвердите или измените текст:",
+            f"⚠️ В тексте найдены запрещённые слова (заменены на ***):\n{censored_text}\n"
+            "Подтвердите или измените текст:",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
         return WAIT_CENSOR_APPROVAL
-
     context.user_data["text"] = censored_text
     await safe_reply_text(update, "Введите телефон для связи:")
     return PHONE_INPUT
@@ -690,10 +694,8 @@ async def get_news_text(update: Update, context: CallbackContext) -> int:
     if len(text) > MAX_ANNOUNCE_NEWS_TEXT_LENGTH:
         await safe_reply_text(update, f"Текст слишком длинный (максимум {MAX_ANNOUNCE_NEWS_TEXT_LENGTH} символов).")
         return NEWS_TEXT_INPUT
-
     if update.message.photo:
         context.user_data["photo_id"] = update.message.photo[-1].file_id
-
     censored_text, has_bad = censor_text(text)
     if has_bad:
         context.user_data["censored_text"] = censored_text
@@ -703,11 +705,11 @@ async def get_news_text(update: Update, context: CallbackContext) -> int:
         ]
         await safe_reply_text(
             update,
-            f"⚠️ В тексте найдены запрещённые слова:\n{censored_text}\nПодтвердите отправку:",
+            f"⚠️ В тексте найдены запрещённые слова:\n{censored_text}\n"
+            "Подтвердите отправку:",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
         return WAIT_CENSOR_APPROVAL
-
     context.user_data["text"] = censored_text
     return await complete_request(update, context)
 
@@ -720,7 +722,6 @@ async def get_phone_number(update: Update, context: CallbackContext) -> int:
             "Введите корректный номер телефона (например: +79610904569 или 8XXXXXXXXXX)."
         )
         return PHONE_INPUT
-
     context.user_data["phone_number"] = phone_raw
     return await complete_request(update, context)
 
@@ -728,7 +729,6 @@ async def get_phone_number(update: Update, context: CallbackContext) -> int:
 async def handle_censor_choice(update: Update, context: CallbackContext) -> int:
     query = update.callback_query
     await query.answer()
-    
     if query.data == "accept_censor":
         context.user_data["text"] = context.user_data["censored_text"]
         return await complete_request(update, context)
@@ -738,7 +738,6 @@ async def handle_censor_choice(update: Update, context: CallbackContext) -> int:
             "Введите исправленный текст:", 
             reply_markup=InlineKeyboardMarkup(BACK_BUTTON)
         )
-        
         request_type = context.user_data.get("type")
         if request_type == "congrat":
             return CUSTOM_CONGRAT_MESSAGE_INPUT
@@ -746,7 +745,6 @@ async def handle_censor_choice(update: Update, context: CallbackContext) -> int:
             return ANNOUNCE_TEXT_INPUT
         elif request_type == "news":
             return NEWS_TEXT_INPUT
-            
     return ConversationHandler.END
 
 # ========== Завершение заявки ==========
@@ -755,7 +753,6 @@ async def complete_request(update: Update, context: CallbackContext) -> int:
     if not await can_submit_request(user.id):
         await safe_reply_text(update, "Вы отправили слишком много заявок. Попробуйте позже.")
         return ConversationHandler.END
-
     user_data = context.user_data
     app_data = {
         'user_id': user.id,
@@ -774,14 +771,12 @@ async def complete_request(update: Update, context: CallbackContext) -> int:
         'ride_date': user_data.get('ride_date'),
         'ride_seats': user_data.get('ride_seats')
     }
-
     app_id = await add_application(app_data)
     if app_id:
         if ADMIN_CHAT_ID:
             await notify_admin_new_application(context.bot, app_id)
         else:
             logger.warning("ADMIN_CHAT_ID не задан. Уведомление администратору не отправлено.")
-
         if user_data['type'] == "news":
             await publish_to_channel(app_id, context.bot)
             await safe_reply_text(update, "✅ Ваша новость опубликована!")
@@ -789,7 +784,6 @@ async def complete_request(update: Update, context: CallbackContext) -> int:
             await safe_reply_text(update, f"✅ Заявка #{app_id} отправлена на модерацию.")
     else:
         await safe_reply_text(update, "❌ Ошибка при создании заявки.")
-
     context.user_data.clear()
     return ConversationHandler.END
 
@@ -799,28 +793,24 @@ async def notify_admin_new_application(bot: Bot, app_id: int):
     if not app_data:
         logger.error(f"Не удалось получить данные для заявки #{app_id} для отправки админу.")
         return
-
     try:
         app_type = REQUEST_TYPES.get(app_data['type'], {}).get('name', 'Заявка')
         subtype = ANNOUNCE_SUBTYPES.get(app_data['subtype'], '') if app_data.get('subtype') else ''
         full_type = f"{app_type}" + (f" ({subtype})" if subtype else '')
         phone = f"• Телефон: {app_data['phone_number']}" if app_data.get('phone_number') else ""
         has_photo = "✅" if app_data.get('photo_id') else "❌"
-
         caption = f"""📨 Новая заявка #{app_id}
 • Тип: {full_type}
 • Фото: {has_photo}
 {phone}
 • От: @{app_data.get('username') or 'N/A'} (ID: {app_data['user_id']})
 • Текст: {app_data['text']}"""
-
         keyboard = None
         if app_data['type'] != "news":
             keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton("✅ Одобрить", callback_data=f"approve_{app_id}"),
                  InlineKeyboardButton("❌ Отклонить", callback_data=f"reject_{app_id}")]
             ])
-
         if app_data.get('photo_id'):
             await bot.send_photo(
                 chat_id=ADMIN_CHAT_ID,
@@ -846,7 +836,6 @@ async def publish_to_channel(app_id: int, bot: Bot):
     if not app_data:
         logger.error(f"Не удалось получить данные для публикации заявки #{app_id}.")
         return False
-
     try:
         if app_data.get('photo_id'):
             await bot.send_photo(
@@ -861,7 +850,6 @@ async def publish_to_channel(app_id: int, bot: Bot):
                 text=app_data['text'],
                 parse_mode="HTML"
             )
-        
         await mark_application_as_published(app_id)
         logger.info(f"Заявка #{app_id} опубликована в канале.")
         return True
@@ -874,14 +862,12 @@ async def admin_approve_application(update: Update, context: CallbackContext):
     query = update.callback_query
     await query.answer()
     app_id = int(query.data.split('_')[1])
-    
     if await update_application_status(app_id, 'approved'):
         await safe_edit_message_text(
             query,
             f"✅ Заявка #{app_id} одобрена!",
             reply_markup=None
         )
-        
         # Публикуем сразу, если это новость
         app_data = await get_application_details(app_id)
         if app_data and app_data['type'] == "news":
@@ -897,7 +883,6 @@ async def admin_reject_application(update: Update, context: CallbackContext):
     query = update.callback_query
     await query.answer()
     app_id = int(query.data.split('_')[1])
-    
     if await update_application_status(app_id, 'rejected'):
         await safe_edit_message_text(
             query,
@@ -917,13 +902,11 @@ async def check_pending_applications():
         applications = await get_approved_unpublished_applications()
         if not applications:
             return
-
         bot = Bot(token=TOKEN)
         for app in applications:
             try:
                 if app['publish_date'] and datetime.strptime(app['publish_date'], "%Y-%m-%d").date() > datetime.now().date():
                     continue
-                    
                 await publish_to_channel(app['id'], bot)
                 logger.info(f"Опубликовано сообщение #{app['id']}")
                 await asyncio.sleep(1)
@@ -938,9 +921,7 @@ async def initialize_bot():
     async with application_lock:
         if application is not None:
             return
-        
         application = Application.builder().token(TOKEN).build()
-
         # Создаем ConversationHandler
         conv_handler = ConversationHandler(
             entry_points=[
@@ -975,15 +956,12 @@ async def initialize_bot():
             allow_reentry=True,
             conversation_timeout=timedelta(minutes=CONVERSATION_TIMEOUT_MINUTES).total_seconds()
         )
-
         # Добавляем обработчики
         application.add_handler(conv_handler)
         application.add_handler(MessageHandler(filters.PHOTO, handle_any_photo), group=1)
         application.add_handler(CallbackQueryHandler(admin_approve_application, pattern="^approve_\\d+$"))
         application.add_handler(CallbackQueryHandler(admin_reject_application, pattern="^reject_\\d+$"))
-
         await application.initialize()
-
         # Устанавливаем вебхук только если URL задан
         if WEBHOOK_URL and WEBHOOK_SECRET:
             webhook_url = f"{WEBHOOK_URL}/telegram-webhook/{WEBHOOK_SECRET}"
@@ -991,7 +969,6 @@ async def initialize_bot():
             logger.info(f"Вебхук установлен: {webhook_url}")
         else:
             logger.warning("WEBHOOK_URL или WEBHOOK_SECRET не заданы. Вебхук не будет установлен.")
-
         logger.info("Бот инициализирован.")
 
 # ========== FastAPI приложение ==========
@@ -1002,7 +979,6 @@ async def startup_event():
     await init_db()
     await load_bad_words()
     await initialize_bot()
-    
     scheduler = AsyncIOScheduler(
         jobstores={'default': SQLAlchemyJobStore(url='sqlite:///jobs.sqlite')},
         executors={'default': AsyncIOExecutor()},
@@ -1026,7 +1002,6 @@ async def telegram_webhook(secret: str, request: Request):
         if application is None:
             logger.error("Критическая ошибка: не удалось инициализировать приложение Telegram.")
             raise HTTPException(status_code=500, detail="Bot not initialized")
-    
     try:
         data = await request.json()
         update = Update.de_json(data, application.bot)
@@ -1042,4 +1017,3 @@ async def root():
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=PORT)
-
