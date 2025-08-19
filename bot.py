@@ -399,7 +399,7 @@ async def handle_carpool_start(update: Update, context: CallbackContext) -> int:
     ]
     await safe_edit_message_text(
         query,
-        "Выберите тип поездки:",
+        "🚗 Здесь вы можете оставить попутку!\n\nВыберите тип поездки:\n— «Ищу попутчиков» (если хотите найти компанию для поездки)\n— «Предлагаю поездку» (если есть свободные места в машине)",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
     return CARPOOL_SUBTYPE_SELECTION
@@ -532,14 +532,14 @@ async def handle_type_selection(update: Update, context: CallbackContext) -> int
     if request_type == "news":
         await safe_edit_message_text(
             query,
-            "Введите ваш контактный телефон (формат: +7... или 8...):",
+            "📰 Новость от жителя\n\nЗдесь можно поделиться важной информацией о жизни города: события, происшествия, интересные факты.\n\nВведите ваш контактный телефон (формат: +7... или 8...), чтобы мы могли уточнить детали при необходимости.",
             reply_markup=InlineKeyboardMarkup(BACK_BUTTON)
         )
         return NEWS_PHONE_INPUT
     elif request_type == "congrat":
         await safe_edit_message_text(
             query,
-            f"Введите ваше имя (например: *{EXAMPLE_TEXTS['sender_name']}*):",
+            f"🎉 Вы собираетесь отправить поздравление!\n\nУкажите своё имя, чтобы подписать поздравление (например: *{EXAMPLE_TEXTS['sender_name']}*).",
             reply_markup=InlineKeyboardMarkup(BACK_BUTTON),
             parse_mode="Markdown"
         )
@@ -551,7 +551,7 @@ async def handle_type_selection(update: Update, context: CallbackContext) -> int
         ] + BACK_BUTTON
         await safe_edit_message_text(
             query,
-            "Выберите тип объявления:",
+            "📢 Размещение объявления\n\nЗдесь можно:\n— Разместить предложение/спрос (работа, услуги, товары)\n— Сообщить о потерях и находках\n\nВыберите подходящий тип объявления:",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
         return ANNOUNCE_SUBTYPE_SELECTION
@@ -564,8 +564,8 @@ async def get_sender_name(update: Update, context: CallbackContext) -> int:
         return SENDER_NAME_INPUT
     context.user_data["from_name"] = sender_name
     await safe_reply_text(
-        update, 
-        f"Кого поздравляете? Например: *{EXAMPLE_TEXTS['recipient_name']}*", 
+        update,
+        f"🎉 Отлично! Теперь укажите, кого поздравляете.\n\nНапример: *{EXAMPLE_TEXTS['recipient_name']}*.\nМожно написать имя человека, группу или организацию.",
         parse_mode="Markdown"
     )
     return RECIPIENT_NAME_INPUT
@@ -726,7 +726,8 @@ async def get_news_phone_number(update: Update, context: CallbackContext) -> int
         return NEWS_PHONE_INPUT
     context.user_data["phone_number"] = phone
     await safe_reply_text(
-        update, 
+        update,
+        "📰 Коротко опишите, что произошло, где и когда. При необходимости можно прикрепить фото.\n\n"
         f"Введите текст новости (до {MAX_ANNOUNCE_NEWS_TEXT_LENGTH} символов):"
     )
     return NEWS_TEXT_INPUT
