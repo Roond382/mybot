@@ -247,7 +247,7 @@ async def update_application_status(app_id: int, status: str) -> bool:
         return True
     except Exception as e:
         logger.error(f"Ошибка обновления статуса заявки {app_id}: {e}")
-        return False)
+        return False
 
 async def mark_application_as_published(app_id: int):
     await run_in_executor(_db_execute_sync, """
@@ -1102,3 +1102,4 @@ async def root():
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=PORT)
+
